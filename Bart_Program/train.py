@@ -1,39 +1,47 @@
-import os
-import torch
-import torch.optim as optim
-import torch.nn as nn
 import argparse
-import shutil
 import json
-from tqdm import tqdm
+import logging
+import os
+import shutil
+import time
 from datetime import date
-from utils.misc import MetricLogger, seed_everything, ProgressBar
-from utils.load_kb import DataForSPARQL
-from .data import DataLoader
-from transformers import BartConfig, BartForConditionalGeneration, BartTokenizer
+
+import torch
+import torch.nn as nn
 # from .sparql_engine import get_sparql_answer
 import torch.optim as optim
-import logging
-import time
+from tqdm import tqdm
+from transformers import (BartConfig, BartForConditionalGeneration,
+                          BartTokenizer)
+from utils.load_kb import DataForSPARQL
 from utils.lr_scheduler import get_linear_schedule_with_warmup
-from Bart_Program.predict import validate
+from utils.misc import MetricLogger, ProgressBar, seed_everything
+
 from Bart_Program.executor_rule import RuleExecutor
+from Bart_Program.predict import validate
+
+from .data import DataLoader
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(message)s')
 logFormatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
 rootLogger = logging.getLogger()
 import warnings
+
 warnings.simplefilter("ignore") # hide warnings that caused by invalid sparql query
 
 
 def train(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = torch.device(device)
 
     logging.info("Create train_loader and val_loader.........")
     vocab_json = os.path.join(args.input_dir, 'vocab.json')
     train_pt = os.path.join(args.input_dir, 'train.pt')
     val_pt = os.path.join(args.input_dir, 'val.pt')
+    test_pt = os.path.join(args.input_dir, 'test.pt')
     train_loader = DataLoader(vocab_json, train_pt, args.batch_size, training=True)
     val_loader = DataLoader(vocab_json, val_pt, 64)
+    # test_loader = DataLoader(vocab_json, test_pt, 64)
 
     vocab = train_loader.vocab
     kb = DataForSPARQL(os.path.join(args.input_dir, 'kb.json'))
@@ -88,7 +96,7 @@ def train(args):
     validate(args, kb, model, val_loader, device, tokenizer, rule_executor)
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
-    prefix = 25984
+    prefix = 0
     for _ in range(int(args.num_train_epochs)):
         pbar = ProgressBar(n_total=len(train_loader), desc='Training')
         for step, batch in enumerate(train_loader):
@@ -97,18 +105,19 @@ def train(args):
                 steps_trained_in_current_epoch -= 1
                 continue
             model.train()
+            batch, origin_info = batch[:-1], batch[-1]
             batch = tuple(t.to(device) for t in batch)
             pad_token_id = tokenizer.pad_token_id
             source_ids, source_mask, y = batch[0], batch[1], batch[-2]
             y_ids = y[:, :-1].contiguous()
-            lm_labels = y[:, 1:].clone()
-            lm_labels[y[:, 1:] == pad_token_id] = -100
+            labels = y[:, 1:].clone()
+            labels[y[:, 1:] == pad_token_id] = -100
 
             inputs = {
                 "input_ids": source_ids.to(device),
                 "attention_mask": source_mask.to(device),
                 "decoder_input_ids": y_ids.to(device),
-                "lm_labels": lm_labels.to(device),
+                "labels": labels.to(device),
             }
             outputs = model(**inputs)
             loss = outputs[0]
@@ -121,30 +130,28 @@ def train(args):
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-            if args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                logging.info("===================Dev==================")
-                validate(args, kb, model, val_loader, device, tokenizer, rule_executor)
-
-            #     logging.info("===================Test==================")
-            #     evaluate(args, model, test_loader, device)
-            if args.save_steps > 0 and global_step % args.save_steps == 0:
-                    # Save model checkpoint
-                    output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step + prefix))
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    model_to_save = (
-                        model.module if hasattr(model, "module") else model
-                    )  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                    logging.info("Saving model checkpoint to %s", output_dir)
-                    tokenizer.save_vocabulary(output_dir)
-                    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-                    logging.info("Saving optimizer and scheduler states to %s", output_dir)
+        logging.info('\n')
+        logging.info("===================Dev==================")
+        validate(args, kb, model, val_loader, device, tokenizer, rule_executor)
+        # Save model checkpoint
+        output_dir = os.path.join(args.output_dir, "checkpoint-{}".format(global_step + prefix))
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        model_to_save = (
+            model.module if hasattr(model, "module") else model
+        )  # Take care of distributed/parallel training
+        model_to_save.save_pretrained(output_dir)
+        torch.save(args, os.path.join(output_dir, "training_args.bin"))
+        logging.info("Saving model checkpoint to %s", output_dir)
+        tokenizer.save_vocabulary(output_dir)
+        torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+        torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+        logging.info("Saving optimizer and scheduler states to %s", output_dir)
         logging.info("\n")
         if 'cuda' in str(device):
             torch.cuda.empty_cache()
+    # logging.info("===================Test==================")
+    # evaluate(args, model, test_loader, device)
     return global_step, tr_loss / global_step
 
 

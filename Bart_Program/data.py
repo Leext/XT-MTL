@@ -13,17 +13,18 @@ def collate(batch):
     source_ids = torch.stack(batch[0])
     source_mask = torch.stack(batch[1])
     choices = torch.stack(batch[2])
-    if batch[-1][0] is None:
+    if batch[4][0] is None:
         target_ids, answer = None, None
     else:
         target_ids = torch.stack(batch[3])
         answer = torch.cat(batch[4])
-    return source_ids, source_mask, choices, target_ids, answer
+    origin_info = batch[5]
+    return source_ids, source_mask, choices, target_ids, answer, origin_info
 
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, inputs):
-        self.source_ids, self.source_mask, self.target_ids, self.choices, self.answers = inputs
+        self.source_ids, self.source_mask, self.target_ids, self.choices, self.answers, self.origin_info = inputs
         self.is_test = len(self.answers)==0
 
 
@@ -37,7 +38,8 @@ class Dataset(torch.utils.data.Dataset):
         else:
             target_ids = torch.LongTensor(self.target_ids[index])
             answer = torch.LongTensor([self.answers[index]])
-        return source_ids, source_mask, choices, target_ids, answer
+        origin_info = self.origin_info[index]
+        return source_ids, source_mask, choices, target_ids, answer, origin_info
 
 
     def __len__(self):
@@ -54,6 +56,7 @@ class DataLoader(torch.utils.data.DataLoader):
         with open(question_pt, 'rb') as f:
             for _ in range(5):
                 inputs.append(pickle.load(f))
+            inputs.append(pickle.load(f)) # origin questions
         dataset = Dataset(inputs)
         # np.shuffle(dataset)
         # dataset = dataset[:(int)(len(dataset) / 10)]
