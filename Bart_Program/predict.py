@@ -1,27 +1,33 @@
-import os
-import torch
-import torch.optim as optim
-import torch.nn as nn
 import argparse
-import shutil
 import json
-from tqdm import tqdm
-from datetime import date
-from utils.misc import MetricLogger, seed_everything, ProgressBar
-from utils.load_kb import DataForSPARQL
-from .data import DataLoader
-from transformers import BartConfig, BartForConditionalGeneration, BartTokenizer
-import torch.optim as optim
 import logging
-import time
-from utils.lr_scheduler import get_linear_schedule_with_warmup
+import os
 import re
+import shutil
+import time
+from datetime import date
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+from transformers import (BartConfig, BartForConditionalGeneration,
+                          BartTokenizer)
+from utils.load_kb import DataForSPARQL
+from utils.lr_scheduler import get_linear_schedule_with_warmup
+from utils.misc import MetricLogger, ProgressBar, seed_everything
+
 from Bart_Program.executor_rule import RuleExecutor
+from Bart_Program.preprocess import get_program_seq
+
+from .data import DataLoader
+
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)-8s %(message)s')
 logFormatter = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
 rootLogger = logging.getLogger()
 import warnings
+
 warnings.simplefilter(
     "ignore")  # hide warnings that caused by invalid sparql query
 
@@ -81,7 +87,11 @@ def predict(args, kb, model, data, device, tokenizer, executor):
         all_outputs = []
         for batch in tqdm(data, total=len(data)):
             batch = batch[:3]
-            source_ids, source_mask, choices = [x.to(device) for x in batch]
+            # source_ids, source_mask, choices = [x.to(device) for x in batch]
+            if args.cbr:
+                source_ids = batch[2].to(device)
+            else:
+                source_ids = batch[0].to(device)
             outputs = model.generate(
                 input_ids=source_ids,
                 max_length=500,
@@ -132,9 +142,14 @@ def validate(args, kb, model, data, device, tokenizer, executor):
     with torch.no_grad():
         all_outputs = []
         all_answers = []
+        all_info = []
+        all_gold_programs = []
         for batch in tqdm(data, total=len(data)):
-            source_ids = batch[0].to(device)
-            answer = batch[4].to(device)
+            if args.cbr:
+                source_ids = batch[2].to(device)
+            else:
+                source_ids = batch[0].to(device)
+            answer = batch[-2].to(device)
             outputs = model.generate(
                 input_ids=source_ids,
                 max_length=500,
@@ -142,6 +157,7 @@ def validate(args, kb, model, data, device, tokenizer, executor):
 
             all_outputs.extend(outputs.cpu().numpy())
             all_answers.extend(answer.cpu().numpy())
+            all_info.extend(batch[-1])
             # break
 
         outputs = [
@@ -155,7 +171,8 @@ def validate(args, kb, model, data, device, tokenizer, executor):
         ]
         # questions = [tokenizer.decode(source_id, skip_special_tokens = True, clean_up_tokenization_spaces = True) for source_id in all_answers]
         # total = []
-        for a, output in tqdm(zip(given_answer, outputs)):
+        incorrect_list = []
+        for a, output, info in tqdm(zip(given_answer, outputs, all_info)):
             # print(output)
             # print(output)
             # print(output)
@@ -182,11 +199,13 @@ def validate(args, kb, model, data, device, tokenizer, executor):
                 ans = 'no'
             if ans == a:
                 correct += 1
+            else:
+                incorrect_list.append((info, output, ans))
             count += 1
         acc = correct / count
         logging.info('acc: {}'.format(acc))
 
-        return acc
+        return acc, incorrect_list
 
 
 def train(args):

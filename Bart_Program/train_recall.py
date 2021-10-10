@@ -1,4 +1,5 @@
 import argparse
+from ast import parse
 import json
 import logging
 import os
@@ -18,9 +19,9 @@ from utils.load_kb import DataForSPARQL
 from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
 
-from .data import DataLoader
+from .data import DataLoader, PairDataLoader
 from .model import BartCBR
-from .recall import get_simi_matrix, validate
+from .recall import get_simi_matrix, validate, get_rel_seq, get_func_rel_rep, get_func_rep, unpack_pair_batch, rep_fn_map, simi_fn_map
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s %(levelname)-8s %(message)s',
@@ -34,8 +35,7 @@ warnings.simplefilter(
 
 
 def train(args):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    device = torch.device(device)
+    device = torch.device(args.device)
     logging.info('training device: %s' % str(device))
 
     logging.info("Create train_loader and val_loader.........")
@@ -43,11 +43,23 @@ def train(args):
     train_pt = os.path.join(args.input_dir, 'train.pt')
     val_pt = os.path.join(args.input_dir, 'val.pt')
     test_pt = os.path.join(args.input_dir, 'test.pt')
-    train_loader = DataLoader(vocab_json,
-                              train_pt,
-                              args.batch_size,
-                              training=True)
-    val_loader = DataLoader(vocab_json, val_pt, 64)
+    if args.pair:
+        train_recall_index = os.path.join(args.recall_index, 'train.pkl')
+        train_loader = PairDataLoader(vocab_json,
+                                      train_pt,
+                                      train_recall_index,
+                                      args.batch_size,
+                                      args.k,
+                                      training=True)
+        valid_recall_index = os.path.join(args.recall_index, 'valid.pkl')
+        val_loader = PairDataLoader(vocab_json, val_pt, valid_recall_index,
+                                    args.batch_size, args.k)
+    else:
+        train_loader = DataLoader(vocab_json,
+                                  train_pt,
+                                  args.batch_size,
+                                  training=True)
+        val_loader = DataLoader(vocab_json, val_pt, 64)
     # test_loader = DataLoader(vocab_json, test_pt, 64)
 
     vocab = train_loader.vocab
@@ -57,6 +69,9 @@ def train(args):
     tokenizer = BartTokenizer.from_pretrained(args.model_name_or_path)
     model = BartCBR(args.model_name_or_path)
     model = model.to(device)
+    simi_fn = simi_fn_map.get(args.simi_fn)
+    rep_fn = rep_fn_map.get(args.rep_fn)
+    simi_matrix_func = lambda x: get_simi_matrix(x, rep_fn, simi_fn)
     logging.info(model)
     t_total = len(
         train_loader
@@ -128,7 +143,8 @@ def train(args):
                      steps_trained_in_current_epoch)
     logging.info('Checking...')
     logging.info("===================Dev==================")
-    valid_loss = validate(args, model, val_loader, device, tokenizer)
+    valid_loss = validate(args, model, val_loader, device, tokenizer,
+                          simi_matrix_func)
     tr_loss, logging_loss = 0.0, 0.0
     save_best_num = 3
     loss_ckpt_pairs = [(1e10, '')]
@@ -142,10 +158,15 @@ def train(args):
                 continue
             model.train()
             pad_token_id = tokenizer.pad_token_id
-            source_ids, source_mask = batch[0].to(device), batch[1].to(device)
-            origin_info = batch[-1]
+            if args.pair:
+                source_ids, source_mask, origin_info = unpack_pair_batch(batch)
+            else:
+                source_ids, source_mask = batch[0], batch[1]
+                origin_info = batch[-1]
+            source_ids = source_ids.to(device)
+            source_mask = source_mask.to(device)
             sent_rep = model.get_sent_rep(source_ids, source_mask)
-            text_simi_mat = torch.tensor(get_simi_matrix(origin_info),
+            text_simi_mat = torch.tensor(simi_matrix_func(origin_info),
                                          device=device)
             loss = model.similarity_loss(sent_rep, text_simi_mat)
             loss.backward()
@@ -160,19 +181,20 @@ def train(args):
                 global_step += 1
         logging.info('\n')
         logging.info("===================Dev==================")
-        valid_loss = validate(args, model, val_loader, device, tokenizer)
+        valid_loss = validate(args, model, val_loader, device, tokenizer,
+                              simi_matrix_func)
         logging.info('Epoch %d: valid loss %.5f' % (epoch, valid_loss))
         if loss_ckpt_pairs[-1][0] > valid_loss:
             # Save model checkpoint
             output_dir = os.path.join(args.output_dir, args.comment,
                                       "epoch_%d" % epoch)
             loss_ckpt_pairs.append((valid_loss, output_dir))
-            loss_ckpt_pairs.sort(key=lambda x: x[0], reverse=True)
+            loss_ckpt_pairs.sort(key=lambda x: x[0])
             if len(loss_ckpt_pairs) > save_best_num:
                 _, path_to_del = loss_ckpt_pairs.pop()
                 if os.path.exists(path_to_del):
                     logging.info('Delete ckpt: %s' % path_to_del)
-                    os.rmdir(path_to_del)
+                    os.system('rm -rf %s' % path_to_del)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
             model_to_save = (
@@ -208,13 +230,19 @@ def main():
                         help='path to save checkpoints and logs')
     parser.add_argument('--model_name_or_path', required=True)
     parser.add_argument('--ckpt')
+    parser.add_argument('--recall_index')
 
     # training parameters
+    parser.add_argument('--pair', action='store_true')
+    parser.add_argument('--k', default=3, type=int)
+    parser.add_argument('--rep_fn', required=True)
+    parser.add_argument('--simi_fn', required=True)
     parser.add_argument('--weight_decay', default=1e-5, type=float)
     parser.add_argument('--batch_size', default=16, type=int)
     parser.add_argument('--seed', type=int, default=666, help='random seed')
     parser.add_argument('--learning_rate', default=3e-5, type=float)
     parser.add_argument('--num_train_epochs', default=25, type=int)
+    parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--save_steps', default=448, type=int)
     parser.add_argument('--logging_steps', default=448, type=int)
     parser.add_argument(
@@ -252,7 +280,7 @@ def main():
         os.makedirs(args.save_dir)
     time_ = time.strftime("%Y-%m-%d-%H:%M:%S", time.localtime())
     fileHandler = logging.FileHandler(
-        os.path.join(args.save_dir, '{}.log'.format(time_)))
+        os.path.join(args.save_dir, '%s_%s.log' % (args.comment, time_)))
     fileHandler.setFormatter(logFormatter)
     rootLogger.addHandler(fileHandler)
     # args display
