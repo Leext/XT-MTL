@@ -29,7 +29,7 @@ def get_program_seq(program):
     return seq
 
 
-pattern = re.compile(r'(.*?)\((.*?)\)')
+pattern = re.compile(r'(.*?)\((.*?)\)$')
 
 
 def seq2program(seq: str):

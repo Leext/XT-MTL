@@ -12,6 +12,22 @@ def load_vocab(path):
     return vocab
 
 
+def sample(batch_data, ratio: float):
+    if ratio >= 1.0:
+        return batch_data
+    datasize = len(batch_data[0])
+    sample_size = int(ratio * datasize)
+    indice = np.random.choice(datasize, sample_size, replace=False)
+    sample_data = []
+    for item in batch_data:
+        if type(item) is list:
+            data = [item[i] for i in indice]
+        else:
+            data = item[indice] if len(item) == datasize else item
+        sample_data.append(data)
+    return sample_data
+
+
 def collate(batch):
     batch = list(zip(*batch))
     source_ids = torch.stack(batch[0])
@@ -49,7 +65,7 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class DataLoader(torch.utils.data.DataLoader):
-    def __init__(self, vocab_json, question_pt, batch_size, training=False):
+    def __init__(self, vocab_json, question_pt, batch_size, training=False, ratio=1.0):
         vocab = load_vocab(vocab_json)
         if training:
             print('#vocab of answer: %d' % (len(vocab['answer_token_to_idx'])))
@@ -59,6 +75,8 @@ class DataLoader(torch.utils.data.DataLoader):
             for _ in range(5):
                 inputs.append(pickle.load(f))
             inputs.append(pickle.load(f))  # origin questions
+        if training:
+            inputs = sample(inputs, ratio)
         dataset = Dataset(inputs)
         # np.shuffle(dataset)
         # dataset = dataset[:(int)(len(dataset) / 10)]
@@ -177,7 +195,7 @@ class CBRDataset(torch.utils.data.Dataset):
 
 
 class CBRDataLoader(torch.utils.data.DataLoader):
-    def __init__(self, vocab_json, question_pt, batch_size, training=False):
+    def __init__(self, vocab_json, question_pt, batch_size, training=False, ratio=1.0):
         vocab = load_vocab(vocab_json)
         if training:
             print('#vocab of answer: %d' % (len(vocab['answer_token_to_idx'])))
@@ -188,8 +206,8 @@ class CBRDataLoader(torch.utils.data.DataLoader):
                 inputs.append(pickle.load(f))
             inputs.append(pickle.load(f))  # origin questions
         dataset = CBRDataset(inputs)
-        # np.shuffle(dataset)
-        # dataset = dataset[:(int)(len(dataset) / 10)]
+        if training:
+            inputs = sample(inputs, ratio)
         super().__init__(
             dataset,
             batch_size=batch_size,

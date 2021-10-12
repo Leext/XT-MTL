@@ -237,6 +237,7 @@ def main():
     parser.add_argument('--ckpt')
 
     parser.add_argument('--cbr', action='store_true')
+    parser.add_argument('--sample', default=1.0, type=float)
 
     # training parameters
     parser.add_argument('--weight_decay', default=1e-5, type=float)

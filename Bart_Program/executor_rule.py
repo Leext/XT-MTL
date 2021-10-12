@@ -239,7 +239,7 @@ class RuleExecutor(object):
         name = inputs[0]
         entity_ids = self.entity_name_to_ids[name]
         if name in self.concept_name_to_ids: # concept may appear in some relations
-            entity_ids += self.concept_name_to_ids[name]
+            entity_ids = entity_ids + self.concept_name_to_ids[name]
         return (entity_ids, None)
 
     def FilterConcept(self, dependencies, inputs):
