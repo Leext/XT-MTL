@@ -1,6 +1,6 @@
 import os, json, pickle
 
-from .preprocess import get_program_seq
+from .program_utils import get_program_seq
 
 def load_pred_dump(fname):
 	questions, preds, golds = [], [], []

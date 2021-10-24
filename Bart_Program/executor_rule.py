@@ -1,9 +1,15 @@
-from utils.value_class import ValueClass, comp
 import json
+import traceback
 from collections import defaultdict
 from datetime import date
 from queue import Queue
+from copy import deepcopy
 
+from utils.value_class import ValueClass, comp
+
+from Bart_Program.link import collect_nums, search, is_num, is_date
+
+# yapf: disable
 """
 For convenience of implementation, in this rule-based execution engine,
 all locating functions (including And Or) return (entity_ids, facts), 
@@ -24,7 +30,7 @@ constrains = {                          # dependencies, inputs, returns, functio
     'QFilterYear': [1, 3],              # [(entity_ids, facts)]; [qualifier_key, qualifier_value, op]; [(entity_ids, facts)];
     'QFilterDate': [1, 3],              # [(entity_ids, facts)]; [qualifier_key, qualifier_value, op]; [(entity_ids, facts)];
     'Relate': [1, 2],                   # [entity_ids]; [predicate, direction]; [(entity_ids, facts)]; entity number should be 1
-    
+
     # functions for logic
     'And': [2, 0],                      # [entity_ids_1, entity_ids_2]; []; [(entity_ids, facts)], intersection
     'Or': [2, 0],                       # [entity_ids_1, entity_ids_2]; []; [(entity_ids, facts)], union
@@ -44,6 +50,7 @@ constrains = {                          # dependencies, inputs, returns, functio
     'QueryAttrQualifier': [1, 3],       # [entity_ids]; [key, value, qualifier_key]; [qualifier_value]; get the qualifier value of the given attribute fact, entity number should be 1
     'QueryRelationQualifier': [2, 2],   # [entity_ids_1, entity_ids_2]; [predicate, qualifier_key]; [qualifier_value]; get the qualifier value of the given relation fact, entity number should be 1
 }
+# yapf: enable
 
 
 class RuleExecutor(object):
@@ -66,12 +73,44 @@ class RuleExecutor(object):
         self.concept_name_to_ids = defaultdict(list)
         for con_id, con_info in self.concepts.items():
             self.concept_name_to_ids[con_info['name']].append(con_id)
+        self.entity_names = set(self.entity_name_to_ids.keys())
+        self.concept_names = set(self.concept_name_to_ids.keys())
+        self.entity_names.update(self.concept_names)
 
         self.concept_to_entity = defaultdict(set)
         for ent_id in self.entities:
-            for c in self._get_all_concepts(ent_id): # merge entity into ancestor concepts
+            for c in self._get_all_concepts(
+                    ent_id):  # merge entity into ancestor concepts
                 self.concept_to_entity[c].add(ent_id)
-        self.concept_to_entity = { k:list(v) for k,v in self.concept_to_entity.items() }
+        self.concept_to_entity = {
+            k: list(v)
+            for k, v in self.concept_to_entity.items()
+        }
+
+        # add attr names
+        attr_values = []
+        attr_keys = []
+        rel_keys = []
+        for ent in self.entities.values():
+            for attr in ent['attributes']:
+                attr_keys.append(attr['key'])
+                if attr['value']['type'] == 'string':
+                    attr_values.append(attr['value']['value'])
+                for key, item in attr['qualifiers'].items():
+                    attr_keys.append(key)
+                    for sub_item in item:
+                        if sub_item['type'] == 'string':
+                            attr_values.append(sub_item['value'])
+            for rel in ent['relations']:
+                rel_keys.append(rel['predicate'])
+                for key, qual in rel['qualifiers'].items():
+                    attr_keys.append(key)
+                    for item in qual:
+                        if item['type'] == 'string':
+                            attr_values.append(item['value'])
+        self.attr_values = set(attr_values)
+        self.attr_keys = set(attr_keys)
+        self.rel_keys = set(rel_keys)
 
         self.key_type = {}
         for ent_id, ent_info in self.entities.items():
@@ -86,18 +125,25 @@ class RuleExecutor(object):
                     for qv in rel_info['qualifiers'][qk]:
                         self.key_type[qk] = qv['type']
         # Note: key_type is one of string/quantity/date, but date means the key may have values of type year
-        self.key_type = { k:v if v!='year' else 'date' for k,v in self.key_type.items() }
+        self.key_type = {
+            k: v if v != 'year' else 'date'
+            for k, v in self.key_type.items()
+        }
 
         # parse values into ValueClass object
         for ent_id, ent_info in self.entities.items():
             for attr_info in ent_info['attributes']:
                 attr_info['value'] = self._parse_value(attr_info['value'])
                 for qk, qvs in attr_info['qualifiers'].items():
-                    attr_info['qualifiers'][qk] = [self._parse_value(qv) for qv in qvs]
+                    attr_info['qualifiers'][qk] = [
+                        self._parse_value(qv) for qv in qvs
+                    ]
         for ent_id, ent_info in self.entities.items():
             for rel_info in ent_info['relations']:
                 for qk, qvs in rel_info['qualifiers'].items():
-                    rel_info['qualifiers'][qk] = [self._parse_value(qv) for qv in qvs]
+                    rel_info['qualifiers'][qk] = [
+                        self._parse_value(qv) for qv in qvs
+                    ]
 
         # some entities may have relations with concepts, we add them into self.concepts for visiting convenience
         for ent_id in self.entities:
@@ -111,13 +157,14 @@ class RuleExecutor(object):
                         'direction': 'forward' if rel_info['direction']=='backward' else 'backward',
                         'object': ent_id,
                         'qualifiers': rel_info['qualifiers'],
-                        })
+                        }) # yapf: disable
+
 
     def _parse_value(self, value):
         if value['type'] == 'date':
             x = value['value']
             p1, p2 = x.find('/'), x.rfind('/')
-            y, m, d = int(x[:p1]), int(x[p1+1:p2]), int(x[p2+1:])
+            y, m, d = int(x[:p1]), int(x[p1 + 1:p2]), int(x[p2 + 1:])
             result = ValueClass('date', date(y, m, d))
         elif value['type'] == 'year':
             result = ValueClass('year', value['value'])
@@ -153,9 +200,68 @@ class RuleExecutor(object):
                 q.put(c)
         return ancestors
 
+    def revise_program(self, qtext, func_list, inputs_list):
+        def align_nums(nums, num_str):
+            new_nums = [search(num, nums, True) for num in num_str.split(' ')]
+            new_num = ' '.join(new_nums)
+            return new_num
 
-    def forward(self, program, inputs, 
-                ignore_error=False, show_details=False):
+        inputs_list_copy = deepcopy(inputs_list)
+        try:
+            nums = collect_nums(qtext)
+            for func, inputs in zip(func_list, inputs_list_copy):
+                # align values
+                if func == 'Find':
+                    inputs[0] = search(inputs[0], self.entity_names, True)
+                elif func == 'FilterConcept':
+                    inputs[0] = search(inputs[0], self.concept_names, True)
+                elif func in {'FilterStr', 'QFilterStr', 'QueryAttrQualifier'}:
+                    if is_num(inputs[1]):
+                        # print(inputs, nums)
+                        inputs[1] = align_nums(nums, inputs[1])
+                        # print(inputs, nums)
+                    elif not is_date(inputs[1]) and 'time' not in inputs[0]:
+                    # 'date' not in inputs[0] \
+                    #         and 'time' not in inputs[0] \
+                    #         and 'inception' not in inputs[0]:
+                        ww = inputs[1].split(' ')
+                        if any(map(is_num, ww)):
+                            new_w = []
+                            for w in ww:
+                                if is_num(w):
+                                    new_w.append(align_nums(nums, w))
+                                else:
+                                    new_w.append(w)
+                                inputs[1] = ' '.join(new_w)
+                        else:
+                            inputs[1] = search(inputs[1], self.attr_values,
+                                               True)
+                elif func in {'VerifyStr'}:
+                    inputs[0] = search(inputs[0], self.attr_values, True)
+                elif func in {
+                        'FilterNum', 'QFilterNum', 'QueryAttrUnderCondition'
+                }:
+                    inputs[1] = align_nums(nums, inputs[1])
+
+                # align keys
+                if func in {
+                        'FilterStr', 'FilterNum', 'FilterYear', 'FilterDate',
+                        'QFilterStr', 'QFilterNum', 'QFilterYear',
+                        'QFilterDate', 'SelectBetween', 'SelectAmong',
+                        'QueryAttr', 'QueryAttrUnderCondition',
+                        'QueryAttrQualifier'
+                }:
+                    inputs[0] = search(inputs[0], self.attr_keys, True)
+                elif func == 'Relate':
+                    inputs[0] = search(inputs[0], self.rel_keys, True)
+            return func_list, inputs_list_copy
+        except:
+            # print('revise error')
+            # traceback.print_exc()
+            pass
+        return func_list, inputs_list
+
+    def forward(self, program, inputs, ignore_error=False, show_details=False):
         memory = []
         program = ['<START>'] + program + ['<END>']
         inputs = [[]] + inputs + [[]]
@@ -175,11 +281,14 @@ class RuleExecutor(object):
                 elif p in {'FindAll', 'Find'}:
                     dep = [0, 0]
                     branch_stack.append(i - 1)
-                elif p in {'And', 'Or', 'SelectBetween', 'QueryRelation', 'QueryRelationQualifier'}:
-                    dep = [branch_stack[-1], i-1]
+                elif p in {
+                        'And', 'Or', 'SelectBetween', 'QueryRelation',
+                        'QueryRelationQualifier'
+                }:
+                    dep = [branch_stack[-1], i - 1]
                     branch_stack = branch_stack[:-1]
                 else:
-                    dep = [i-1, 0]
+                    dep = [i - 1, 0]
                 dependency.append(dep)
 
             for p, dep, inp in zip(program, dependency, inputs):
@@ -204,15 +313,12 @@ class RuleExecutor(object):
             else:
                 raise
 
-
-
-
     def _parse_key_value(self, key, value, typ=None):
         if typ is None:
             typ = self.key_type[key]
-        if typ=='string':
+        if typ == 'string':
             value = ValueClass('string', value)
-        elif typ=='quantity':
+        elif typ == 'quantity':
             if ' ' in value:
                 vs = value.split()
                 v = vs[0]
@@ -225,7 +331,8 @@ class RuleExecutor(object):
             if '/' in value or ('-' in value and '-' != value[0]):
                 split_char = '/' if '/' in value else '-'
                 p1, p2 = value.find(split_char), value.rfind(split_char)
-                y, m, d = int(value[:p1]), int(value[p1+1:p2]), int(value[p2+1:])
+                y, m, d = int(value[:p1]), int(value[p1 + 1:p2]), int(
+                    value[p2 + 1:])
                 value = ValueClass('date', date(y, m, d))
             else:
                 value = ValueClass('year', int(value))
@@ -238,7 +345,7 @@ class RuleExecutor(object):
     def Find(self, dependencies, inputs):
         name = inputs[0]
         entity_ids = self.entity_name_to_ids[name]
-        if name in self.concept_name_to_ids: # concept may appear in some relations
+        if name in self.concept_name_to_ids:  # concept may appear in some relations
             entity_ids = entity_ids + self.concept_name_to_ids[name]
         return (entity_ids, None)
 
@@ -259,7 +366,8 @@ class RuleExecutor(object):
         for i in entity_ids:
             for attr_info in self.entities[i]['attributes']:
                 k, v = attr_info['key'], attr_info['value']
-                if k==tgt_key and v.can_compare(tgt_value) and comp(v, tgt_value, op):
+                if k == tgt_key and v.can_compare(tgt_value) and comp(
+                        v, tgt_value, op):
                     res_ids.append(i)
                     res_facts.append(attr_info)
         return (res_ids, res_facts)
@@ -284,7 +392,8 @@ class RuleExecutor(object):
         key, value, op = inputs[0], inputs[1], inputs[2]
         return self._filter_attribute(entity_ids, key, value, op, 'date')
 
-    def _filter_qualifier(self, entity_ids, facts, tgt_key, tgt_value, op, typ):
+    def _filter_qualifier(self, entity_ids, facts, tgt_key, tgt_value, op,
+                          typ):
         tgt_value = self._parse_key_value(tgt_key, tgt_value, typ)
         res_ids = []
         res_facts = []
@@ -292,7 +401,8 @@ class RuleExecutor(object):
             for qk, qvs in f['qualifiers'].items():
                 if qk == tgt_key:
                     for qv in qvs:
-                        if qv.can_compare(tgt_value) and comp(qv, tgt_value, op):
+                        if qv.can_compare(tgt_value) and comp(
+                                qv, tgt_value, op):
                             res_ids.append(i)
                             res_facts.append(f)
         return (res_ids, res_facts)
@@ -300,22 +410,26 @@ class RuleExecutor(object):
     def QFilterStr(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], '='
-        return self._filter_qualifier(entity_ids, facts, key, value, op, 'string')
+        return self._filter_qualifier(entity_ids, facts, key, value, op,
+                                      'string')
 
     def QFilterNum(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], inputs[2]
-        return self._filter_qualifier(entity_ids, facts, key, value, op, 'quantity')
+        return self._filter_qualifier(entity_ids, facts, key, value, op,
+                                      'quantity')
 
     def QFilterYear(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], inputs[2]
-        return self._filter_qualifier(entity_ids, facts, key, value, op, 'year')
+        return self._filter_qualifier(entity_ids, facts, key, value, op,
+                                      'year')
 
     def QFilterDate(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], inputs[2]
-        return self._filter_qualifier(entity_ids, facts, key, value, op, 'date')
+        return self._filter_qualifier(entity_ids, facts, key, value, op,
+                                      'date')
 
     def Relate(self, dependencies, inputs):
         entity_ids, _ = dependencies[0]
@@ -328,7 +442,8 @@ class RuleExecutor(object):
         else:
             rel_infos = self.concepts[entity_id]['relations']
         for rel_info in rel_infos:
-            if rel_info['predicate']==predicate and rel_info['direction']==direction:
+            if rel_info['predicate'] == predicate and rel_info[
+                    'direction'] == direction:
                 res_ids.append(rel_info['object'])
                 res_facts.append(rel_info)
         return (res_ids, res_facts)
@@ -365,7 +480,8 @@ class RuleExecutor(object):
         for attr_info in self.entities[entity_id_2]['attributes']:
             if key == attr_info['key']:
                 v2 = attr_info['value']
-        i = entity_id_1 if ((op=='greater' and v1>v2) or (op=='less' and v1<v2)) else entity_id_2
+        i = entity_id_1 if ((op == 'greater' and v1 > v2) or
+                            (op == 'less' and v1 < v2)) else entity_id_2
         name = self.entities[i]['name']
         return name
 
@@ -379,7 +495,7 @@ class RuleExecutor(object):
                     v = attr_info['value']
             candidates.append((i, v))
         sort = sorted(candidates, key=lambda x: x[1])
-        i = sort[0][0] if op=='smallest' else sort[-1][0]
+        i = sort[0][0] if op == 'smallest' else sort[-1][0]
         name = self.entities[i]['name']
         return name
 
@@ -403,7 +519,8 @@ class RuleExecutor(object):
                 for qk, qvs in attr_info['qualifiers'].items():
                     if qk == qual_key:
                         for qv in qvs:
-                            if qv.can_compare(qual_value) and comp(qv, qual_value, "="):
+                            if qv.can_compare(qual_value) and comp(
+                                    qv, qual_value, "="):
                                 flag = True
                                 break
                     if flag:
@@ -425,7 +542,6 @@ class RuleExecutor(object):
     def VerifyStr(self, dependencies, inputs):
         value, op = inputs[0], '='
         return self._verify(dependencies, value, op, 'string')
-        
 
     def VerifyNum(self, dependencies, inputs):
         value, op = inputs[0], inputs[1]
@@ -450,7 +566,8 @@ class RuleExecutor(object):
             rel_infos = self.concepts[entity_id_1]['relations']
         p = None
         for rel_info in rel_infos:
-            if rel_info['object']==entity_id_2 and rel_info['direction']=='forward':
+            if rel_info['object'] == entity_id_2 and rel_info[
+                    'direction'] == 'forward':
                 p = rel_info['predicate']
         return p
 

@@ -3,16 +3,11 @@ import json
 import os
 import pickle
 import re
-
-from .preprocess import seq2program, get_program_seq
-from Levenshtein import distance
 import traceback
 
-def get_all_names(kb):
-    pass
+from Levenshtein import distance
 
-
-kb_json = 'dataset_fix/kb.json'
+from .program_utils import get_program_seq, seq2program
 
 
 def edit_similarity(s1, s2):
@@ -24,7 +19,7 @@ def edit_similarity(s1, s2):
 def search(query, cands, return_orgin=False):
     if query in cands:
         return query
-    max_d, max_cand = 0, None
+    max_d, max_cand = 0.4, None
     for cand in cands:
         d = edit_similarity(query, cand)
         if d > max_d:
@@ -35,20 +30,24 @@ def search(query, cands, return_orgin=False):
     return max_cand
 
 
+def is_num(w):
+    if w.isdigit():
+        return True
+    if w.count('.') == 1:
+        ww = w.split('.')
+        return ww[0].isdigit() and ww[1].isdigit()
+    return False
+
+def is_date(w):
+    return re.match(r'\d{4}[/-]\d{2}[/-]\d{2}', w) is not None
+
 def collect_nums(text):
     words = re.split('[ ?()]', text)
     nums = []
     for w in words:
         w = w.replace(',', '')
-        try:
-            if '.' in w:
-                ww = w.split('.')
-                n = str(int(ww[0])) + str(int(ww[1]))
-            else:
-                n = str(int(w))
-            nums.append(n)
-        except:
-            pass
+        if is_num(w):
+            nums.append(w)
     return nums
 
 
@@ -66,11 +65,13 @@ class Linker2:
         attr_names = []
         for ent in entities.values():
             for attr in ent['attributes']:
-                if attr['value']['type'] != 'quantity' and type(attr['value']['value']) is str:
+                if attr['value']['type'] != 'quantity' and type(
+                        attr['value']['value']) is str:
                     attr_names.append(attr['value']['value'])
                 for item in attr['qualifiers'].values():
                     for sub_item in item:
-                        if sub_item['type'] != 'quantity' and type(sub_item['value']) is str:
+                        if sub_item['type'] != 'quantity' and type(
+                                sub_item['value']) is str:
                             attr_names.append(sub_item['value'])
             for rel in ent['relations']:
                 for qual in rel['qualifiers'].values():
@@ -93,7 +94,11 @@ class Linker2:
                 elif func == 'VerifyStr':
                     inputs[0] = search(inputs[0], self.attr_names, True)
                 elif func in {'FilterNum', 'QFilterNum'}:
-                    inputs[1] = search(inputs[1], nums, True)
+                    new_nums = []
+                    for num in inputs[1].split(' '):
+                        new_num = search(num, nums, True)
+                        new_nums.append(new_num)
+                    inputs[1] = ' '.join(new_nums)
             program = [{
                 'function': func,
                 'inputs': inputs
@@ -103,7 +108,3 @@ class Linker2:
         except:
             traceback.print_exc()
         return program_seq
-
-
-if __name__ == '__main__':
-    pass

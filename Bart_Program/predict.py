@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ from datetime import date
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tqdm import tqdm
+# from tqdm import tqdm
 from transformers import (BartConfig, BartForConditionalGeneration,
                           BartTokenizer)
 from utils.load_kb import DataForSPARQL
@@ -18,7 +19,7 @@ from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
 
 from Bart_Program.executor_rule import RuleExecutor
-from Bart_Program.preprocess import get_program_seq
+from Bart_Program.program_utils import edit_similarity, get_program_seq, get_rel_seq, program2seq, seq2program, get_func_seq
 
 from .data import DataLoader
 
@@ -30,6 +31,11 @@ import warnings
 
 warnings.simplefilter(
     "ignore")  # hide warnings that caused by invalid sparql query
+
+def tqdm(data, total=0, desc=''):
+    # logging.info('start %s' % desc)
+    yield from data
+    # logging.info('%s done, total %d' % (desc, total))
 
 
 def post_process(text):
@@ -88,7 +94,7 @@ def predict(args, kb, model, data, device, tokenizer, executor):
         for batch in tqdm(data, total=len(data)):
             batch = batch[:3]
             # source_ids, source_mask, choices = [x.to(device) for x in batch]
-            if args.cbr:
+            if args.type == 'cbr':
                 source_ids = batch[2].to(device)
             else:
                 source_ids = batch[0].to(device)
@@ -98,7 +104,7 @@ def predict(args, kb, model, data, device, tokenizer, executor):
             )
 
             all_outputs.extend(outputs.cpu().numpy())
-            break
+            # break  ???
 
         outputs = [
             tokenizer.decode(output_id,
@@ -109,24 +115,7 @@ def predict(args, kb, model, data, device, tokenizer, executor):
         # questions = [tokenizer.decode(source_id, skip_special_tokens = True, clean_up_tokenization_spaces = True) for source_id in all_answers]
         with open(os.path.join(args.save_dir, 'predict.txt'), 'w') as f:
             for output in tqdm(outputs):
-                chunks = output.split('<b>')
-                func_list = []
-                inputs_list = []
-                for chunk in chunks:
-                    # print(chunk)
-                    res = pattern.findall(chunk)
-                    # print(res)
-                    if len(res) == 0:
-                        continue
-                    res = res[0]
-                    func, inputs = res[0], res[1]
-                    if inputs == '':
-                        inputs = []
-                    else:
-                        inputs = inputs.split('<c>')
-
-                    func_list.append(func)
-                    inputs_list.append(inputs)
+                func_list, inputs_list = seq2program(output)
                 ans = executor.forward(func_list,
                                        inputs_list,
                                        ignore_error=True)
@@ -138,18 +127,16 @@ def predict(args, kb, model, data, device, tokenizer, executor):
 def validate(args, kb, model, data, device, tokenizer, executor):
     model.eval()
     count, correct = 0, 0
-    pattern = re.compile(r'(.*?)\((.*?)\)')
     with torch.no_grad():
         all_outputs = []
         all_answers = []
         all_info = []
-        all_gold_programs = []
-        for batch in tqdm(data, total=len(data)):
-            if args.cbr:
+        for batch in tqdm(data, total=len(data), desc='valid generate'):
+            if args.type == 'cbr':
                 source_ids = batch[2].to(device)
             else:
                 source_ids = batch[0].to(device)
-            answer = batch[-2].to(device)
+            answer = batch[-2]
             outputs = model.generate(
                 input_ids=source_ids,
                 max_length=500,
@@ -166,46 +153,150 @@ def validate(args, kb, model, data, device, tokenizer, executor):
                              clean_up_tokenization_spaces=True)
             for output_id in all_outputs
         ]
-        given_answer = [
-            data.vocab['answer_idx_to_token'][a] for a in all_answers
-        ]
         # questions = [tokenizer.decode(source_id, skip_special_tokens = True, clean_up_tokenization_spaces = True) for source_id in all_answers]
         # total = []
         incorrect_list = []
-        for a, output, info in tqdm(zip(given_answer, outputs, all_info)):
-            # print(output)
-            # print(output)
-            # print(output)
-            chunks = output.split('<b>')
-            func_list = []
-            inputs_list = []
-            for chunk in chunks:
-                # print(chunk)
-                res = pattern.findall(chunk)
-                # print(res)
-                if len(res) == 0:
-                    continue
-                res = res[0]
-                func, inputs = res[0], res[1]
-                if inputs == '':
-                    inputs = []
-                else:
-                    inputs = inputs.split('<c>')
-
-                func_list.append(func)
-                inputs_list.append(inputs)
+        for output, info in tqdm(zip(outputs, all_info), total=len(all_info)):
+            func_list, inputs_list = seq2program(output)
+            if args.revise:
+                func_list, inputs_list = executor.revise_program(
+                    info['question'], func_list, inputs_list)
+                output = program2seq(func_list, inputs_list)
             ans = executor.forward(func_list, inputs_list, ignore_error=True)
             if ans == None:
                 ans = 'no'
-            if ans == a:
+            if ans == info['answer']:
                 correct += 1
             else:
                 incorrect_list.append((info, output, ans))
             count += 1
         acc = correct / count
-        logging.info('acc: {}'.format(acc))
+        return {'q': (acc, incorrect_list)}
 
+
+def validate_prompt(args, kb, model, data, device, tokenizer, executor):
+    def stat_results_qa(pred_ans_list, all_info):
+        count, correct = 0, 0
+        incorrect_list = []
+        for pred_ans, info in tqdm(zip(pred_ans_list, all_info),
+                                   total=len(all_info),
+                                   desc='stat results'):
+            func_list, inputs_list = seq2program(pred_ans)
+            if args.revise:
+                func_list, inputs_list = executor.revise_program(
+                    info['question'], func_list, inputs_list)
+                pred_ans = program2seq(func_list, inputs_list)
+            ans = executor.forward(func_list, inputs_list, ignore_error=True)
+            if ans == None:
+                ans = 'no'
+            if ans == info['answer']:
+                correct += 1
+            else:
+                incorrect_list.append((info, pred_ans, ans))
+            count += 1
+        acc = correct / count
         return acc, incorrect_list
+
+    def stat_results_rel(pred_ans_list, all_info, seq_fn):
+        count, correct = 0, 0
+        incorrect_list = []
+        for pred_ans, info in tqdm(zip(pred_ans_list, all_info),
+                                   total=len(all_info),
+                                   desc='stat results'):
+            true_rels = seq_fn(info['program'])
+            pred_rels = [
+                s.strip() for s in pred_ans.split(';') if s.strip() != ''
+            ]
+            if pred_rels == true_rels:
+                correct += 1
+            else:
+                incorrect_list.append((info, pred_rels, true_rels))
+            count += 1
+        acc = correct / count
+        return acc, incorrect_list
+
+    model.eval()
+    tasks = args.tasks.split(',')
+    task2tgt = dict()
+    for t in tasks:
+        key, tgt, w = t.split(':')
+        task2tgt[key] = (tgt, float(w))
+    with torch.no_grad():
+        all_answers = []
+        all_info = []
+        all_task_outputs = defaultdict(list)
+        for batch in tqdm(data, total=len(data), desc='valid generate'):
+            answer = batch['answer']
+            for task in task2tgt.keys():
+                inputs = batch['%s_ids' % task].to(device)
+                outputs = model.generate(input_ids=inputs, max_length=500)
+                all_task_outputs[task].extend([
+                    tokenizer.decode(output,
+                                     skip_special_tokens=True,
+                                     clean_up_tokenization_spaces=True)
+                    for output in outputs.cpu().numpy()
+                ])
+
+            all_answers.extend(answer.cpu().numpy())
+            all_info.extend(batch['origin_info'])
+
+        results = dict()
+        for task in task2tgt.keys():
+            if 'rel' in task:
+                results[task] = stat_results_rel(all_task_outputs[task],
+                                                 all_info, get_rel_seq)
+            elif 'func' in task:
+                results[task] = stat_results_rel(all_task_outputs[task],
+                                                 all_info, get_func_seq)
+            else:
+                results[task] = stat_results_qa(all_task_outputs[task],
+                                                all_info)
+
+        return results
+
+
+def validate_prompt_rel(args, model, data, device, tokenizer):
+    model.eval()
+    count, correct = 0, 0
+    with torch.no_grad():
+        all_outputs = []
+        all_info = []
+        for batch in tqdm(data, total=len(data)):
+            source_ids = batch[0].to(device)
+            outputs = model.generate(
+                input_ids=source_ids,
+                max_length=500,
+            )
+
+            all_outputs.extend(outputs.cpu().numpy())
+            all_info.extend(batch[-1])
+            # break
+
+        outputs = [
+            tokenizer.decode(output_id,
+                             skip_special_tokens=True,
+                             clean_up_tokenization_spaces=True)
+            for output_id in all_outputs
+        ]
+        incorrect_list = []
+        cum_simi = 0
+        for output, info in tqdm(zip(outputs, all_info)):
+            true_rels = get_rel_seq(info['program'])
+            pred_rels = [
+                s.strip() for s in output.split(';') if s.strip() != ''
+            ]
+            if true_rels == pred_rels:
+                correct += 1
+            else:
+                incorrect_list.append((info, output, pred_rels))
+            cum_simi += edit_similarity(true_rels, pred_rels)
+            count += 1
+        acc = correct / count
+        edit_simi = cum_simi / count
+        logging.info('acc: {}'.format(acc))
+        logging.info('edit similarity: {}'.format(edit_simi))
+
+        return acc, edit_simi, incorrect_list
 
 
 def train(args):
