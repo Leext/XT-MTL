@@ -19,7 +19,7 @@ from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
 
 from Bart_Program.executor_rule import RuleExecutor
-from Bart_Program.predict import validate, validate_prompt, validate_prompt_rel
+from Bart_Program.predict import validate, validate_prompt, validate_prompt_rel, predict_prompt
 import Bart_Program.kb_pretrain as KBP
 
 from .data import CBRDataLoader, DataLoader, PromptDataLoader
@@ -214,7 +214,7 @@ def train(args):
 
     if args.kbp:
         kb_train, kb_val = KBP.prepare_data(
-            args, os.path.join(args.input_dir, 'kb.json'), tokenizer)
+            args, os.path.join('./dataset/', 'kb.json'), tokenizer)
 
     if args.type == 'cbr':
         loader_class = CBRDataLoader
@@ -234,11 +234,11 @@ def train(args):
                                 training=True,
                                 ratio=args.sample)
     val_loader = loader_class(vocab_json, val_pt, 64)
-    # test_loader = DataLoader(vocab_json, test_pt, 64)
+    test_loader = loader_class(vocab_json, test_pt, 64)
 
     vocab = train_loader.vocab
-    kb = DataForSPARQL(os.path.join(args.input_dir, 'kb.json'))
-    rule_executor = RuleExecutor(vocab, os.path.join(args.input_dir,
+    kb = DataForSPARQL(os.path.join('./dataset/', 'kb.json'))
+    rule_executor = RuleExecutor(vocab, os.path.join('./dataset/',
                                                      'kb.json'))
 
     t_total = len(
@@ -287,20 +287,19 @@ def train(args):
         key, tgt, w = t.split(':')
         task2tgt[key] = (tgt, float(w))
     logging.info('task2tgt %s' % str(task2tgt))
-    logging.info('Checking...')
-    results = valid_step_fn(args, kb, model, val_loader, device, tokenizer,
-                            rule_executor)
-
-    output_dir = os.path.join(args.output_dir, args.comment)
-    if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
-    dump_error_cases(results, output_dir)
     if args.valid:
+        results = valid_step_fn(args, kb, model, val_loader, device, tokenizer,
+                                rule_executor)
+
+        output_dir = os.path.join(args.output_dir, args.comment)
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir)
+        dump_error_cases(results, output_dir)
         return
     model.zero_grad()
     acc_ckpt_pairs = [(0, -1, 'NOT_EXIST')]
     for epoch in range(int(args.num_train_epochs)):
-        if args.kbp and (epoch % args.kbp_period) == 0:
+        if args.kbp and (epoch < 30 or (epoch % args.kbp_period) == 0):
             kb_train_loss = KBP.train_step(args, model, kb_train, device,
                                            tokenizer, optimizer, scheduler,
                                            args.kbp_sample)
@@ -335,9 +334,15 @@ def train(args):
                 break
         if 'cuda' in str(device):
             torch.cuda.empty_cache()
-    # logging.info("===================Test==================")
-    # evaluate(args, model, test_loader, device)
-
+    if args.type == 'prompt':
+        logging.info("===================Test==================")
+        best_path = acc_ckpt_pairs[0][-1]
+        model = model.from_pretrained(best_path)
+        model.to(device)
+        answers = predict_prompt(args, model, test_loader, device, tokenizer, rule_executor)
+        output_file = os.path.join(args.output_dir, args.comment, 'predict.txt')
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(answers))
 
 def main():
     parser = argparse.ArgumentParser()
@@ -359,9 +364,11 @@ def main():
     parser.add_argument('--revise', action='store_true')
     parser.add_argument('--sample', default=1.0, type=float)
     parser.add_argument('--valid', action='store_true')
+    parser.add_argument('--filter_rels', default='', type=str)
     # training parameters
     parser.add_argument('--kbp', action='store_true')
     parser.add_argument('--kbp_sample', default=0.1, type=float)
+    parser.add_argument('--kbp_weight', default=1.0, type=float)
     parser.add_argument('--kbp_period', default=2, type=int)
     parser.add_argument('--kbp_mode', default='triple')
     parser.add_argument('--kld', action='store_true')

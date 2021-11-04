@@ -19,7 +19,7 @@ from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
 
 from Bart_Program.executor_rule import RuleExecutor
-from Bart_Program.program_utils import edit_similarity, get_program_seq, get_rel_seq, program2seq, seq2program, get_func_seq
+from Bart_Program.program_utils import edit_similarity, get_program_seq, get_rel_rep, get_rel_seq, program2seq, seq2program, get_func_seq
 
 from .data import DataLoader
 
@@ -31,6 +31,7 @@ import warnings
 
 warnings.simplefilter(
     "ignore")  # hide warnings that caused by invalid sparql query
+
 
 def tqdm(data, total=0, desc=''):
     # logging.info('start %s' % desc)
@@ -127,6 +128,11 @@ def predict(args, kb, model, data, device, tokenizer, executor):
 def validate(args, kb, model, data, device, tokenizer, executor):
     model.eval()
     count, correct = 0, 0
+    if args.filter_rels != '':
+        filter_rels = eval(args.filter_rels)
+    else:
+        filter_rels = set()
+
     with torch.no_grad():
         all_outputs = []
         all_answers = []
@@ -157,6 +163,10 @@ def validate(args, kb, model, data, device, tokenizer, executor):
         # total = []
         incorrect_list = []
         for output, info in tqdm(zip(outputs, all_info), total=len(all_info)):
+            if args.filter_rels != '':
+                rels = get_rel_rep(info['program'])
+                if len(rels & filter_rels) == 0:
+                    continue
             func_list, inputs_list = seq2program(output)
             if args.revise:
                 func_list, inputs_list = executor.revise_program(
@@ -178,9 +188,17 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
     def stat_results_qa(pred_ans_list, all_info):
         count, correct = 0, 0
         incorrect_list = []
+        if args.filter_rels != '':
+            filter_rels = eval(args.filter_rels)
+        else:
+            filter_rels = set()
         for pred_ans, info in tqdm(zip(pred_ans_list, all_info),
                                    total=len(all_info),
                                    desc='stat results'):
+            if args.filter_rels != '':
+                rels = get_rel_rep(info['program'])
+                if len(rels & filter_rels) == 0:
+                    continue
             func_list, inputs_list = seq2program(pred_ans)
             if args.revise:
                 func_list, inputs_list = executor.revise_program(
@@ -255,6 +273,35 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
         return results
 
 
+def predict_prompt(args, model, data, device, tokenizer, executor):
+    model.eval()
+    with torch.no_grad():
+        all_answers = []
+        all_outputs = []
+        all_info = []
+        for batch in tqdm(data, total=len(data), desc='predict generate'):
+            inputs = batch['%s_ids' % args.main_task].to(device)
+            all_info.extend(batch['origin_info'])
+            outputs = model.generate(input_ids=inputs, max_length=500)
+            all_outputs.extend([
+                tokenizer.decode(output,
+                                 skip_special_tokens=True,
+                                 clean_up_tokenization_spaces=True)
+                for output in outputs.cpu().numpy()
+            ])
+        for seq, info in zip(all_outputs, all_info):
+            func_list, inputs_list = seq2program(seq)
+            if args.revise:
+                func_list, inputs_list = executor.revise_program(
+                    info['question'], func_list, inputs_list)
+                seq = program2seq(func_list, inputs_list)
+            ans = executor.forward(func_list, inputs_list, ignore_error=True)
+            if ans == None:
+                ans = 'no'
+            all_answers.append(ans)
+        return all_answers
+
+
 def validate_prompt_rel(args, model, data, device, tokenizer):
     model.eval()
     count, correct = 0, 0
@@ -312,7 +359,7 @@ def train(args):
                               training=True)
     val_loader = DataLoader(vocab_json, val_pt, args.batch_size)
     vocab = train_loader.vocab
-    kb = DataForSPARQL(os.path.join(args.input_dir, 'kb.json'))
+    kb = DataForSPARQL(os.path.join('./dataset/', 'kb.json'))
     logging.info("Create model.........")
     config_class, model_class, tokenizer_class = (BartConfig,
                                                   BartForConditionalGeneration,
@@ -321,8 +368,7 @@ def train(args):
     model = model_class.from_pretrained(args.ckpt)
     model = model.to(device)
     logging.info(model)
-    rule_executor = RuleExecutor(vocab, os.path.join(args.input_dir,
-                                                     'kb.json'))
+    rule_executor = RuleExecutor(vocab, os.path.join('./dataset/', 'kb.json'))
     # validate(args, kb, model, val_loader, device, tokenizer, rule_executor)
     predict(args, kb, model, val_loader, device, tokenizer, rule_executor)
 

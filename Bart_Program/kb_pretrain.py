@@ -315,7 +315,7 @@ def train_step(args,
             "labels": labels.to(device),
         }
         outputs = model(**inputs)
-        loss = outputs[0]
+        loss = args.kbp_weight * outputs[0]
         loss.backward()
         step_loss += loss.item()
         if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -351,7 +351,7 @@ def train(args):
     model = model.to(device)
 
     logging.info("Create train_loader and val_loader.........")
-    kb_path = os.path.join(args.input_dir, 'kb.json')
+    kb_path = os.path.join('./dataset/', 'kb.json')
     train_loader, val_loader = prepare_data(args, kb_path, tokenizer)
     logging.info(model)
     t_total = len(
