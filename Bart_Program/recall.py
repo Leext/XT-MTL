@@ -19,9 +19,6 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 from tqdm.utils import disp_trim
-from transformers import (BartConfig, BartForConditionalGeneration,
-                          BartTokenizer)
-from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
 from multiprocessing import Pool
 

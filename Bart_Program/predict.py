@@ -187,6 +187,7 @@ def validate(args, kb, model, data, device, tokenizer, executor):
 def validate_prompt(args, kb, model, data, device, tokenizer, executor):
     def stat_results_qa(pred_ans_list, all_info):
         count, correct = 0, 0
+        rel_count, rel_correct = 0, 0
         incorrect_list = []
         if args.filter_rels != '':
             filter_rels = eval(args.filter_rels)
@@ -195,10 +196,8 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
         for pred_ans, info in tqdm(zip(pred_ans_list, all_info),
                                    total=len(all_info),
                                    desc='stat results'):
-            if args.filter_rels != '':
-                rels = get_rel_rep(info['program'])
-                if len(rels & filter_rels) == 0:
-                    continue
+            has_rel = args.filter_rels != '' and \
+                    len(get_rel_rep(info['program']) & filter_rels) != 0
             func_list, inputs_list = seq2program(pred_ans)
             if args.revise:
                 func_list, inputs_list = executor.revise_program(
@@ -208,11 +207,17 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
             if ans == None:
                 ans = 'no'
             if ans == info['answer']:
-                correct += 1
+                correct += not has_rel
+                rel_correct += has_rel
             else:
                 incorrect_list.append((info, pred_ans, ans))
-            count += 1
+            count += not has_rel
+            rel_count += has_rel
         acc = correct / count
+        if args.filter_rels != '':
+            logging.info('[Valid] Unseen Rel acc %.5f' %
+                         (rel_correct / rel_count))
+            logging.info('[Valid] Seen Rel acc %.5f' % (correct / count))
         return acc, incorrect_list
 
     def stat_results_rel(pred_ans_list, all_info, seq_fn):
@@ -246,7 +251,10 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
         for batch in tqdm(data, total=len(data), desc='valid generate'):
             answer = batch['answer']
             for task in task2tgt.keys():
-                inputs = batch['%s_ids' % task].to(device)
+                task_key = '%s_ids' % task
+                if task_key not in batch:
+                    continue
+                inputs = batch[task_key].to(device)
                 outputs = model.generate(input_ids=inputs, max_length=500)
                 all_task_outputs[task].extend([
                     tokenizer.decode(output,
@@ -259,14 +267,15 @@ def validate_prompt(args, kb, model, data, device, tokenizer, executor):
             all_info.extend(batch['origin_info'])
 
         results = dict()
-        for task in task2tgt.keys():
+        for task in all_task_outputs.keys():
             if 'rel' in task:
                 results[task] = stat_results_rel(all_task_outputs[task],
                                                  all_info, get_rel_seq)
             elif 'func' in task:
                 results[task] = stat_results_rel(all_task_outputs[task],
                                                  all_info, get_func_seq)
-            else:
+
+            elif task.startswith('q'):
                 results[task] = stat_results_qa(all_task_outputs[task],
                                                 all_info)
 

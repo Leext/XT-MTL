@@ -2,18 +2,17 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import time
 from datetime import date
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from .sparql_engine import get_sparql_answer
+import numpy as np
 import torch.optim as optim
 from tqdm import tqdm
 from transformers import (BartConfig, BartForConditionalGeneration,
-                          BartTokenizer)
+                          BartTokenizerFast)
 from utils.load_kb import DataForSPARQL
 from utils.lr_scheduler import get_linear_schedule_with_warmup
 from utils.misc import MetricLogger, ProgressBar, seed_everything
@@ -33,6 +32,102 @@ import warnings
 
 warnings.simplefilter(
     "ignore")  # hide warnings that caused by invalid sparql query
+
+
+def add_infilling_data(batch, tokenizer):
+    info = batch.get('origin_info')
+    questions = [item['question'] for item in info]
+    programs = [get_program_seq(item['program']) for item in info]
+    funcs = []
+    for p in programs:
+        funcs.extend(p.split('<b>'))
+    for i in range(len(programs)):
+        funcs_ = programs[i].split('<b>')
+        if np.random.rand() > 0.5:
+            funcs_[np.random.randint(0, len(funcs_))] = np.random.choice(funcs)
+        else:
+            funcs_[np.random.randint(0, len(funcs_))] = '<mask>'
+        programs[i] = '<b>'.join(funcs_)
+
+    raw_inputs = [
+        'Question %s Incomplete program is %s Complete program for the question is'
+        % (q, p) for q, p in zip(questions, programs)
+    ]
+    encoding = tokenizer.batch_encode_plus(raw_inputs,
+                                           padding=True,
+                                           max_length=1024,
+                                           truncation=True,
+                                           return_tensors="pt")
+    batch['infilling_ids'] = encoding['input_ids']
+    batch['infilling_mask'] = encoding['attention_mask']
+
+
+def add_infilling_plus(batch, tokenizer):
+    info = batch.get('origin_info')
+    questions = [item['question'] for item in info]
+    programs = [get_program_seq(item['program']) for item in info]
+    funcs = []
+    for p in programs:
+        funcs.extend(p.split('<b>'))
+    replace_programs, mask_programs, swap_programs = [], [], []
+    for p in programs:
+        funcs_ = p.split('<b>')
+        # random replace
+        # funcs_temp = list(funcs_)
+        # funcs_[np.random.randint(0, len(funcs_))] = np.random.choice(funcs)
+        # new_p = '<b>'.join(funcs_temp)
+        # replace_programs.append(new_p)
+
+        # random mask
+        funcs_temp = list(funcs_)
+        indice = np.random.choice(len(funcs_), min(len(funcs_), 3))
+        for i in indice:
+            funcs_[i] = '<mask>'
+        new_p = '<b>'.join(funcs_temp)
+        mask_programs.append(new_p)
+
+        # random swap
+        funcs_temp = list(funcs_)
+        a, b = np.random.randint(0, len(funcs_), 2)
+        funcs_temp[a], funcs_temp[b] = funcs_temp[b], funcs_temp[a]
+        new_p = '<b>'.join(funcs_temp)
+        swap_programs.append(new_p)
+
+    # raw_inputs = [
+    #     'Question %s Incomplete program is %s Complete program for the question is'
+    #     % (q, p) for q, p in zip(questions, replace_programs)
+    # ]
+    # encoding = tokenizer.batch_encode_plus(raw_inputs,
+    #                                        padding=True,
+    #                                        max_length=1024,
+    #                                        truncation=True,
+    #                                        return_tensors="pt")
+    # batch['replace_ids'] = encoding['input_ids']
+    # batch['replace_mask'] = encoding['attention_mask']
+
+    raw_inputs = [
+        'Question %s Incomplete program is %s Complete program for the question is'
+        % (q, p) for q, p in zip(questions, mask_programs)
+    ]
+    encoding = tokenizer.batch_encode_plus(raw_inputs,
+                                           padding=True,
+                                           max_length=1024,
+                                           truncation=True,
+                                           return_tensors="pt")
+    batch['mask_ids'] = encoding['input_ids']
+    batch['mask_mask'] = encoding['attention_mask']
+
+    raw_inputs = [
+        'Question %s Incomplete program is %s Complete program for the question is'
+        % (q, p) for q, p in zip(questions, swap_programs)
+    ]
+    encoding = tokenizer.batch_encode_plus(raw_inputs,
+                                           padding=True,
+                                           max_length=1024,
+                                           truncation=True,
+                                           return_tensors="pt")
+    batch['swap_ids'] = encoding['input_ids']
+    batch['swap_mask'] = encoding['attention_mask']
 
 
 def train_step(args, model, train_loader, tokenizer, device, optimizer,
@@ -107,27 +202,37 @@ def train_step_prompt(args, model, train_loader, tokenizer, device, optimizer,
         model.train()
         pad_token_id = tokenizer.pad_token_id
         task_loss = []
-        q_logits, q_cbr_logits = None, None
+        # q_logits, q_cbr_logits = None, None
+        if 'infilling' in task2tgt:
+            add_infilling_data(batch, tokenizer)
+        if 'mask' in task2tgt or 'swap' in task2tgt or 'replace' in task2tgt:
+            add_infilling_plus(batch, tokenizer)
         for task, (tgt, w) in task2tgt.items():
             part_loss, logits = part_step(batch['%s_ids' % task],
                                           batch['%s_mask' % task],
                                           batch['%s_ids' % tgt])
             task_loss.append(w * part_loss)
-            if task == 'q':
-                q_logits = logits
-            if task == 'q_cbr':
-                q_cbr_logits = logits
+            if len(task_loss) >= 3:
+                loss = torch.sum(torch.stack(task_loss))
+                loss.backward()
+                epoch_loss += loss.item()
+                task_loss = []
+            # if task == 'q':
+            #     q_logits = logits
+            # if task == 'q_cbr':
+            #     q_cbr_logits = logits
             all_task_loss[task] += part_loss.item()
-        if args.kld and q_logits is not None and q_cbr_logits is not None:
-            kld_loss = args.kld_weight * F.kl_div(F.log_softmax(q_cbr_logits),
-                                                  F.log_softmax(q_logits),
-                                                  reduce='batchmean',
-                                                  log_target=True)
-            task_loss.append(kld_loss)
-            all_task_loss['kld'] += kld_loss.item()
-        loss = torch.sum(torch.stack(task_loss))
-        loss.backward()
-        epoch_loss += loss.item()
+        # if args.kld and q_logits is not None and q_cbr_logits is not None:
+        #     kld_loss = args.kld_weight * F.kl_div(F.log_softmax(q_cbr_logits),
+        #                                           F.log_softmax(q_logits),
+        #                                           reduce='batchmean',
+        #                                           log_target=True)
+        #     task_loss.append(kld_loss)
+        #     all_task_loss['kld'] += kld_loss.item()
+        if len(task_loss) > 0:
+            loss = torch.sum(torch.stack(task_loss))
+            loss.backward()
+            epoch_loss += loss.item()
         if (step + 1) % args.gradient_accumulation_steps == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(),
                                            args.max_grad_norm)
@@ -146,7 +251,7 @@ def save_checkpoint(args,
                     acc_ckpt_pairs,
                     cur_acc,
                     epoch,
-                    save_best_num=3):
+                    save_best_num=1):
     # Save model checkpoint
     output_dir = os.path.join(args.output_dir, args.comment,
                               'epoch_%d' % epoch)
@@ -206,7 +311,7 @@ def train(args):
     logging.info("Create model.........")
     config_class, model_class, tokenizer_class = (BartConfig,
                                                   BartForConditionalGeneration,
-                                                  BartTokenizer)
+                                                  BartTokenizerFast)
     tokenizer = tokenizer_class.from_pretrained(args.model_name_or_path)
     model = model_class.from_pretrained(args.model_name_or_path)
     model = model.to(device)
@@ -238,8 +343,7 @@ def train(args):
 
     vocab = train_loader.vocab
     kb = DataForSPARQL(os.path.join('./dataset/', 'kb.json'))
-    rule_executor = RuleExecutor(vocab, os.path.join('./dataset/',
-                                                     'kb.json'))
+    rule_executor = RuleExecutor(vocab, os.path.join('./dataset/', 'kb.json'))
 
     t_total = len(
         train_loader
@@ -287,6 +391,15 @@ def train(args):
         key, tgt, w = t.split(':')
         task2tgt[key] = (tgt, float(w))
     logging.info('task2tgt %s' % str(task2tgt))
+    if args.predict:
+        answers = predict_prompt(args, model, test_loader, device, tokenizer,
+                                 rule_executor)
+        output_file = os.path.join(args.output_dir, args.comment,
+                                   'predict.txt')
+        os.makedirs(os.path.join(args.output_dir, args.comment))
+        with open(output_file, 'w') as f:
+            f.write('\n'.join(answers))
+        return
     if args.valid:
         results = valid_step_fn(args, kb, model, val_loader, device, tokenizer,
                                 rule_executor)
@@ -297,9 +410,15 @@ def train(args):
         dump_error_cases(results, output_dir)
         return
     model.zero_grad()
+
+    if args.kbp_init:
+        kb_train_loss = KBP.train_step(args, model, kb_train, device,
+                                       tokenizer, optimizer, scheduler, 0.1)
+        logging.info('[KBP init] kb pretrain loss %.8f' % (kb_train_loss))
+
     acc_ckpt_pairs = [(0, -1, 'NOT_EXIST')]
     for epoch in range(int(args.num_train_epochs)):
-        if args.kbp and (epoch < 30 or (epoch % args.kbp_period) == 0):
+        if args.kbp and (epoch < 20 or (epoch % args.kbp_period) == 0):
             kb_train_loss = KBP.train_step(args, model, kb_train, device,
                                            tokenizer, optimizer, scheduler,
                                            args.kbp_sample)
@@ -328,7 +447,7 @@ def train(args):
             if acc_ckpt_pairs[-1][0] < acc:
                 save_checkpoint(args, model, results, tokenizer, optimizer,
                                 scheduler, acc_ckpt_pairs, acc, epoch)
-            elif epoch - acc_ckpt_pairs[0][1] >= 10:
+            elif epoch - acc_ckpt_pairs[0][1] >= 15:
                 logging.info('Early stop, best at epoch %d, acc %.8f' %
                              (acc_ckpt_pairs[0][1], acc_ckpt_pairs[0][0]))
                 break
@@ -339,10 +458,13 @@ def train(args):
         best_path = acc_ckpt_pairs[0][-1]
         model = model.from_pretrained(best_path)
         model.to(device)
-        answers = predict_prompt(args, model, test_loader, device, tokenizer, rule_executor)
-        output_file = os.path.join(args.output_dir, args.comment, 'predict.txt')
+        answers = predict_prompt(args, model, test_loader, device, tokenizer,
+                                 rule_executor)
+        output_file = os.path.join(args.output_dir, args.comment,
+                                   'predict.txt')
         with open(output_file, 'w') as f:
             f.write('\n'.join(answers))
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -364,9 +486,11 @@ def main():
     parser.add_argument('--revise', action='store_true')
     parser.add_argument('--sample', default=1.0, type=float)
     parser.add_argument('--valid', action='store_true')
+    parser.add_argument('--predict', action='store_true')
     parser.add_argument('--filter_rels', default='', type=str)
     # training parameters
     parser.add_argument('--kbp', action='store_true')
+    parser.add_argument('--kbp_init', action='store_true')
     parser.add_argument('--kbp_sample', default=0.1, type=float)
     parser.add_argument('--kbp_weight', default=1.0, type=float)
     parser.add_argument('--kbp_period', default=2, type=int)

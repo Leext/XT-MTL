@@ -7,6 +7,9 @@ output_path = sys.argv[2]
 sample = float(sys.argv[3])
 
 dataset = json.load(open(input_path))
-num = int(sample*len(dataset))
+if sample <= 1.0:
+    num = int(sample*len(dataset))
+else:
+    num = int(sample)
 dataset = random.sample(dataset, num)
 json.dump(dataset, open(output_path, 'w'))
