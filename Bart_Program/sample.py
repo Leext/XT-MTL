@@ -8,7 +8,7 @@ sample = float(sys.argv[3])
 
 dataset = json.load(open(input_path))
 if sample <= 1.0:
-    num = int(sample*len(dataset))
+    num = int(sample * len(dataset))
 else:
     num = int(sample)
 dataset = random.sample(dataset, num)

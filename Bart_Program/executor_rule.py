@@ -54,6 +54,7 @@ constrains = {                          # dependencies, inputs, returns, functio
 
 
 class RuleExecutor(object):
+
     def __init__(self, vocab, kb_json):
         self.vocab = vocab
         print('load kb')
@@ -83,8 +84,7 @@ class RuleExecutor(object):
                     ent_id):  # merge entity into ancestor concepts
                 self.concept_to_entity[c].add(ent_id)
         self.concept_to_entity = {
-            k: list(v)
-            for k, v in self.concept_to_entity.items()
+            k: list(v) for k, v in self.concept_to_entity.items()
         }
 
         # add attr names
@@ -126,8 +126,7 @@ class RuleExecutor(object):
                         self.key_type[qk] = qv['type']
         # Note: key_type is one of string/quantity/date, but date means the key may have values of type year
         self.key_type = {
-            k: v if v != 'year' else 'date'
-            for k, v in self.key_type.items()
+            k: v if v != 'year' else 'date' for k, v in self.key_type.items()
         }
 
         # parse values into ValueClass object
@@ -201,6 +200,7 @@ class RuleExecutor(object):
         return ancestors
 
     def revise_program(self, qtext, func_list, inputs_list):
+
         def align_nums(nums, num_str):
             new_nums = [search(num, nums, True) for num in num_str.split(' ')]
             new_num = ' '.join(new_nums)
@@ -221,9 +221,9 @@ class RuleExecutor(object):
                         inputs[1] = align_nums(nums, inputs[1])
                         # print(inputs, nums)
                     elif not is_date(inputs[1]) and 'time' not in inputs[0]:
-                    # 'date' not in inputs[0] \
-                    #         and 'time' not in inputs[0] \
-                    #         and 'inception' not in inputs[0]:
+                        # 'date' not in inputs[0] \
+                        #         and 'time' not in inputs[0] \
+                        #         and 'inception' not in inputs[0]:
                         ww = inputs[1].split(' ')
                         if any(map(is_num, ww)):
                             new_w = []
@@ -331,8 +331,8 @@ class RuleExecutor(object):
             if '/' in value or ('-' in value and '-' != value[0]):
                 split_char = '/' if '/' in value else '-'
                 p1, p2 = value.find(split_char), value.rfind(split_char)
-                y, m, d = int(value[:p1]), int(value[p1 + 1:p2]), int(
-                    value[p2 + 1:])
+                y, m, d = int(value[:p1]), int(value[p1 + 1:p2]), int(value[p2 +
+                                                                            1:])
                 value = ValueClass('date', date(y, m, d))
             else:
                 value = ValueClass('year', int(value))
@@ -392,8 +392,7 @@ class RuleExecutor(object):
         key, value, op = inputs[0], inputs[1], inputs[2]
         return self._filter_attribute(entity_ids, key, value, op, 'date')
 
-    def _filter_qualifier(self, entity_ids, facts, tgt_key, tgt_value, op,
-                          typ):
+    def _filter_qualifier(self, entity_ids, facts, tgt_key, tgt_value, op, typ):
         tgt_value = self._parse_key_value(tgt_key, tgt_value, typ)
         res_ids = []
         res_facts = []
@@ -422,14 +421,12 @@ class RuleExecutor(object):
     def QFilterYear(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], inputs[2]
-        return self._filter_qualifier(entity_ids, facts, key, value, op,
-                                      'year')
+        return self._filter_qualifier(entity_ids, facts, key, value, op, 'year')
 
     def QFilterDate(self, dependencies, inputs):
         entity_ids, facts = dependencies[0]
         key, value, op = inputs[0], inputs[1], inputs[2]
-        return self._filter_qualifier(entity_ids, facts, key, value, op,
-                                      'date')
+        return self._filter_qualifier(entity_ids, facts, key, value, op, 'date')
 
     def Relate(self, dependencies, inputs):
         entity_ids, _ = dependencies[0]

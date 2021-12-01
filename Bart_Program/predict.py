@@ -185,6 +185,7 @@ def validate(args, kb, model, data, device, tokenizer, executor):
 
 
 def validate_prompt(args, kb, model, data, device, tokenizer, executor):
+
     def stat_results_qa(pred_ans_list, all_info):
         count, correct = 0, 0
         rel_count, rel_correct = 0, 0

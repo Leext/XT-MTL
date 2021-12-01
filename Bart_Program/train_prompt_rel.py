@@ -69,19 +69,15 @@ def train(args):
             p for n, p in bart_param_optimizer
             if not any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        args.weight_decay,
-        'lr':
-        args.learning_rate
+        'weight_decay': args.weight_decay,
+        'lr': args.learning_rate
     }, {
         'params': [
             p for n, p in bart_param_optimizer
             if any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        0.0,
-        'lr':
-        args.learning_rate
+        'weight_decay': 0.0,
+        'lr': args.learning_rate
     }]
     args.warmup_steps = int(t_total * args.warmup_proportion)
     optimizer = optim.AdamW(optimizer_grouped_parameters,
@@ -184,9 +180,8 @@ def train(args):
                     os.system('rm -rf %s' % path_to_del)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-            model_to_save = (
-                model.module if hasattr(model, "module") else model
-            )  # Take care of distributed/parallel training
+            model_to_save = (model.module if hasattr(model, "module") else model
+                            )  # Take care of distributed/parallel training
             model_to_save.save_pretrained(output_dir)
             torch.save(args, os.path.join(output_dir, "training_args.bin"))
             logging.info("Saving model checkpoint to %s", output_dir)
@@ -197,12 +192,10 @@ def train(args):
                        os.path.join(output_dir, "scheduler.pt"))
             logging.info("Saving optimizer and scheduler states to %s",
                          output_dir)
-            with open(os.path.join(output_dir, 'incorrect_pred.txt'),
-                      'w') as f:
+            with open(os.path.join(output_dir, 'incorrect_pred.txt'), 'w') as f:
                 for info, output, pred_ans in incorrect_list:
                     print('Q: %s' % info['question'], file=f)
-                    print('Gold Rel: %s' % get_rel_seq(info['program']),
-                          file=f)
+                    print('Gold Rel: %s' % get_rel_seq(info['program']), file=f)
                     print('Pred Rel: %s' % pred_ans, file=f)
         if 'cuda' in str(device):
             torch.cuda.empty_cache()

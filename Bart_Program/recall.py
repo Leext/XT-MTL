@@ -53,8 +53,9 @@ def get_simi_topk(src_batch, tgt_batch, simi_fn, rep_fn, k=10, parallel=16):
 
     if parallel > 1:
         with Pool(parallel) as pool:
-            simi_topk = pool.map(_get_topk, [(rep, simi_fn, src_sent_reps, k)
-                                             for rep in tgt_sent_reps])
+            simi_topk = pool.map(
+                _get_topk,
+                [(rep, simi_fn, src_sent_reps, k) for rep in tgt_sent_reps])
     else:
         simi_topk = [
             get_topk(rep, simi_fn, src_sent_reps, k) for rep in tgt_sent_reps
@@ -147,9 +148,8 @@ def dump_index(recall_index, origin_info_list, db_origin_info, dump_dir, name,
                 tgt_rels = rep_fn(tgt_info['program'])
                 print('\tQ: %s' % tgt_info['question'], file=f)
                 if name != 'test':
-                    print('\t%.5f  %s' %
-                          (simi_fn(src_rels, tgt_rels),
-                           get_program_seq(tgt_info['program'])),
+                    print('\t%.5f  %s' % (simi_fn(src_rels, tgt_rels),
+                                          get_program_seq(tgt_info['program'])),
                           file=f)
             print(file=f)
     with open(dump_pkl, 'wb') as f:

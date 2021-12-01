@@ -6,6 +6,7 @@ from transformers import (BartConfig, BartForConditionalGeneration,
 
 
 class BartCBR(nn.Module):
+
     def __init__(self, pretrained_model_or_path: str):
         super().__init__()
         self.bart_gen = BartForConditionalGeneration.from_pretrained(

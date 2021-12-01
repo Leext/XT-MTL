@@ -30,7 +30,8 @@ def sample(batch_data, ratio: float):
         sample_data.append(data)
     return sample_data
 
-def sample_dict(batch_data:dict, ratio:float):
+
+def sample_dict(batch_data: dict, ratio: float):
     if ratio >= 1.0:
         return batch_data
     datasize = len(batch_data['origin_info'])
@@ -61,6 +62,7 @@ def collate(batch):
 
 
 class Dataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs):
         self.source_ids, self.source_mask, self.target_ids, self.choices, self.answers, self.origin_info = inputs
         self.is_test = len(self.answers) == 0
@@ -83,6 +85,7 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class DataLoader(torch.utils.data.DataLoader):
+
     def __init__(self,
                  vocab_json,
                  question_pt,
@@ -129,6 +132,7 @@ def collate_pair(batch):
 
 
 class PairDataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs, recall_index, k):
         self.source_ids, self.source_mask, self.target_ids, self.choices, self.answers, self.origin_info = inputs
         self.k = k
@@ -152,6 +156,7 @@ class PairDataset(torch.utils.data.Dataset):
 
 
 class PairDataLoader(torch.utils.data.DataLoader):
+
     def __init__(self,
                  vocab_json,
                  question_pt,
@@ -198,6 +203,7 @@ def collate_cbr(batch):
 
 
 class CBRDataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs):
         self.source_ids, self.source_mask, self.source_ids_cbr, self.source_mask_cbr, self.target_ids, self.answers, self.origin_info = inputs
         self.is_test = len(self.answers) == 0
@@ -221,6 +227,7 @@ class CBRDataset(torch.utils.data.Dataset):
 
 
 class CBRDataLoader(torch.utils.data.DataLoader):
+
     def __init__(self,
                  vocab_json,
                  question_pt,
@@ -264,6 +271,7 @@ def prompt_rel_collate(batch):
 
 
 class PromptRelDataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs):
         self.source_ids, self.source_mask, self.target_ids, self.origin_info = inputs
         self.is_test = len(self.target_ids) == 0
@@ -284,6 +292,7 @@ class PromptRelDataset(torch.utils.data.Dataset):
 
 
 class PromptRelDataLoader(torch.utils.data.DataLoader):
+
     def __init__(self,
                  vocab_json,
                  question_pt,
@@ -355,6 +364,7 @@ def collate_prompt(batch):
 
 
 class PromptDataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs):
         """
             inputs: {
@@ -402,6 +412,7 @@ class PromptDataset(torch.utils.data.Dataset):
 
 
 class PromptDataLoader(torch.utils.data.DataLoader):
+
     def __init__(self,
                  vocab_json,
                  question_pt,

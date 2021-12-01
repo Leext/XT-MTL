@@ -26,6 +26,7 @@ warnings.simplefilter(
 
 
 class Node:
+
     def __init__(self, _type, _info):
         self.type = _type
         self.info = _info
@@ -141,8 +142,8 @@ def kb_encode_dataset(kb, tokenizer, mode='triple'):
         res = []
         while not q.empty():
             node, seq = q.get()
-            if len(seq) >= max_len or (len(seq) > 0
-                                       and np.random.rand() < 0.25):
+            if len(seq) >= max_len or (len(seq) > 0 and
+                                       np.random.rand() < 0.25):
                 res.append(seq)
                 continue
             if node.type == 'entity':
@@ -233,6 +234,7 @@ def collate(batch):
 
 
 class Dataset(torch.utils.data.Dataset):
+
     def __init__(self, inputs):
         self.source_ids, self.source_mask, self.target_ids = inputs
 
@@ -247,6 +249,7 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class DataLoader(torch.utils.data.DataLoader):
+
     def __init__(self, inputs, batch_size, training=False, ratio=1.0):
         dataset = Dataset(inputs)
         # np.shuffle(dataset)
@@ -330,7 +333,7 @@ def train_step(args,
 def prepare_data(args, kb_path, tokenizer):
     kb = json.load(open(kb_path))
     dataset = kb_encode_dataset(kb, tokenizer, args.kbp_mode)
-    train_inputs, valid_outputs = dataset 
+    train_inputs, valid_outputs = dataset
 
     train_loader = DataLoader(train_inputs,
                               args.batch_size,
@@ -364,19 +367,15 @@ def train(args):
             p for n, p in bart_param_optimizer
             if not any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        args.weight_decay,
-        'lr':
-        args.learning_rate
+        'weight_decay': args.weight_decay,
+        'lr': args.learning_rate
     }, {
         'params': [
             p for n, p in bart_param_optimizer
             if any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        0.0,
-        'lr':
-        args.learning_rate
+        'weight_decay': 0.0,
+        'lr': args.learning_rate
     }]
     args.warmup_steps = int(t_total * args.warmup_proportion)
     optimizer = optim.AdamW(optimizer_grouped_parameters,
@@ -415,9 +414,8 @@ def train(args):
                     os.system('rm -rf %s' % path_to_del)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-            model_to_save = (
-                model.module if hasattr(model, "module") else model
-            )  # Take care of distributed/parallel training
+            model_to_save = (model.module if hasattr(model, "module") else model
+                            )  # Take care of distributed/parallel training
             model_to_save.save_pretrained(output_dir)
             torch.save(args, os.path.join(output_dir, "training_args.bin"))
             logging.info("Saving model checkpoint to %s", output_dir)

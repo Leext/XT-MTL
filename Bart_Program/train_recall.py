@@ -83,19 +83,15 @@ def train(args):
             p for n, p in bart_param_optimizer
             if not any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        args.weight_decay,
-        'lr':
-        args.learning_rate
+        'weight_decay': args.weight_decay,
+        'lr': args.learning_rate
     }, {
         'params': [
             p for n, p in bart_param_optimizer
             if any(nd in n for nd in no_decay)
         ],
-        'weight_decay':
-        0.0,
-        'lr':
-        args.learning_rate
+        'weight_decay': 0.0,
+        'lr': args.learning_rate
     }]
     args.warmup_steps = int(t_total * args.warmup_proportion)
     optimizer = optim.AdamW(optimizer_grouped_parameters,
@@ -127,7 +123,7 @@ def train(args):
     steps_trained_in_current_epoch = 0
     # Check if continuing training from a checkpoint
     if os.path.exists(args.model_name_or_path
-                      ) and "checkpoint" in args.model_name_or_path:
+                     ) and "checkpoint" in args.model_name_or_path:
         # set global_step to gobal_step of last saved checkpoint from model path
         global_step = int(args.model_name_or_path.split("-")[-1].split("/")[0])
         epochs_trained = global_step // (len(train_loader) //
@@ -197,9 +193,8 @@ def train(args):
                     os.system('rm -rf %s' % path_to_del)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-            model_to_save = (
-                model.module if hasattr(model, "module") else model
-            )  # Take care of distributed/parallel training
+            model_to_save = (model.module if hasattr(model, "module") else model
+                            )  # Take care of distributed/parallel training
             model_to_save.bart_gen.save_pretrained(output_dir)
             torch.save(args, os.path.join(output_dir, "training_args.bin"))
             logging.info("Saving model checkpoint to %s" % output_dir)

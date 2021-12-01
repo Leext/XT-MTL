@@ -15,52 +15,42 @@ from tqdm import tqdm
 from transformers import *
 
 from Bart_Program.program_utils import get_func_seq, get_rel_seq, get_program_seq
+from Bart_Program.program_permute import permute_program_seq
 
 
-def encode_dataset(dataset, vocab, tokenizer, test=False):
-    questions = []
-    programs = []
-    for item in tqdm(dataset):
-        question = item['question']
-        questions.append(question)
-        if not test:
-            program = item['program']
-            program = get_program_seq(program)
-            programs.append(program)
-    sequences = questions + programs
-    encoded_inputs = tokenizer(sequences, padding=True)
-    print(encoded_inputs.keys())
-    print(encoded_inputs['input_ids'][0])
-    print(tokenizer.decode(encoded_inputs['input_ids'][0]))
-    print(tokenizer.decode(encoded_inputs['input_ids'][-1]))
-    max_seq_length = len(encoded_inputs['input_ids'][0])
-    assert max_seq_length == len(encoded_inputs['input_ids'][-1])
-    print(max_seq_length)
+def encode_dataset(dataset, vocab, tokenizer, name, boost=False):
     questions = []
     programs = []
     choices = []
     answers = []
     for item in tqdm(dataset):
-        question = item['question']
-        questions.append(question)
-        _ = [vocab['answer_token_to_idx'][w] for w in item['choices']]
-        choices.append(_)
-        if not test:
+        count = 1
+        if name != 'test':
             program = item['program']
             program = get_program_seq(program)
-            programs.append(program)
-            answers.append(vocab['answer_token_to_idx'].get(item['answer']))
+            if boost and name == 'train':
+                p_list = permute_program_seq(program)
+            else:
+                p_list = [program]
+            count = len(p_list)
+            for p in p_list:
+                programs.append(p)
+                answers.append(vocab['answer_token_to_idx'].get(item['answer']))
+        question = item['question']
+        questions.extend([question] * count)
+        _ = [vocab['answer_token_to_idx'][w] for w in item['choices']]
+        choices.extend([_] * count)
 
     input_ids = tokenizer.batch_encode_plus(questions,
-                                            max_length=max_seq_length,
-                                            pad_to_max_length=True,
+                                            padding=True,
+                                            max_length=1024,
                                             truncation=True)
     source_ids = np.array(input_ids['input_ids'], dtype=np.int32)
     source_mask = np.array(input_ids['attention_mask'], dtype=np.int32)
-    if not test:
+    if name != 'test':
         target_ids = tokenizer.batch_encode_plus(programs,
-                                                 max_length=max_seq_length,
-                                                 pad_to_max_length=True,
+                                                 max_length=1024,
+                                                 padding=True,
                                                  truncation=True)
         target_ids = np.array(target_ids['input_ids'], dtype=np.int32)
     else:
@@ -148,9 +138,6 @@ def prompt_rel_encode_dataset(dataset, vocab, tokenizer, test=False):
     return source_ids, source_mask, target_ids
 
 
-
-
-
 def prompt_encode_dataset(dataset, vocab, tokenizer, test=False):
     questions = []
     programs = []
@@ -192,8 +179,9 @@ def prompt_cbr_encode_dataset(dataset,
                               recall_index,
                               vocab,
                               tokenizer,
-                              test=False,
-                              k_cases=10):
+                              name,
+                              k_cases=10,
+                              boost=False):
     assert len(dataset) == len(recall_index)
     questions = []
     questions_plus_cases = []
@@ -206,10 +194,29 @@ def prompt_cbr_encode_dataset(dataset,
     answers = []
     for item, index_list in tqdm(zip(dataset, recall_index),
                                  total=len(dataset)):
+        count = 1
+        if name != 'test':
+            seq = get_program_seq(item['program'])
+            cur_rels = get_rel_seq(item['program'])
+            cur_funcs = get_func_seq(item['program'])
+            if boost and name == 'train':
+                p_list = permute_program_seq(seq)
+            else:
+                p_list = [seq]
+            count = len(p_list)
+            for p in p_list:
+                programs.append(p)
+                random.shuffle(cur_rels)
+                rels.append('; '.join(cur_rels))
+                random.shuffle(cur_funcs)
+                funcs.append('; '.join(cur_funcs))
+                answers.append(vocab['answer_token_to_idx'].get(item['answer']))
         question = 'Question 0 ' + item['question']
-        questions.append(question + ' Program for Question 0 is')
-        questions_rels.append(question + ' Relations in the Question 0 are ')
-        questions_funcs.append(question + ' Functions in the Question 0 are ')
+        questions.extend([question + ' Program for Question 0 is'] * count)
+        questions_rels.extend([question + ' Relations in the Question 0 are '] *
+                              count)
+        questions_funcs.extend(
+            [question + ' Functions in the Question 0 are '] * count)
         sents = [question]
         for idx, i in enumerate(index_list[:k_cases]):
             question = 'Question %d %s Program for Question %d is %s' % (
@@ -217,12 +224,7 @@ def prompt_cbr_encode_dataset(dataset,
             sents.append(question)
         sents.append('Program for Question 0 is')
         question = ' '.join(sents)
-        questions_plus_cases.append(question)
-        if not test:
-            programs.append(get_program_seq(item['program']))
-            rels.append('; '.join(get_rel_seq(item['program'])))
-            funcs.append('; '.join(get_func_seq(item['program'])))
-            answers.append(vocab['answer_token_to_idx'].get(item['answer']))
+        questions_plus_cases.extend([question] * count)
 
     input_ids = tokenizer.batch_encode_plus(questions,
                                             padding=True,
@@ -248,7 +250,7 @@ def prompt_cbr_encode_dataset(dataset,
                                             truncation=True)
     q_func_ids = np.array(input_ids['input_ids'], dtype=np.int32)
     q_func_mask = np.array(input_ids['attention_mask'], dtype=np.int32)
-    if not test:
+    if name != 'test':
         target_ids = tokenizer.batch_encode_plus(programs,
                                                  padding=True,
                                                  max_length=1024,
@@ -270,7 +272,7 @@ def prompt_cbr_encode_dataset(dataset,
         rel_ids = target_ids
         func_ids = target_ids
     answers = np.array(answers, dtype=np.int32)
-    return {
+    res = {
         "q_ids": q_ids,
         "q_mask": q_mask,
         "q_rel_ids": q_rel_ids,
@@ -284,6 +286,10 @@ def prompt_cbr_encode_dataset(dataset,
         "func_ids": func_ids,
         "answer": answers
     }
+    print('Shapes: ')
+    for key, val in res.items():
+        print(key, val.shape)
+    return res
 
 
 def main():
@@ -293,6 +299,7 @@ def main():
     parser.add_argument('--type', type=str, default='default')
     parser.add_argument('--cbr_k', type=int, default=3)
     parser.add_argument('--recall_index_dir')
+    parser.add_argument('--boost', action='store_true')
     parser.add_argument('--model_name_or_path', required=True)
     args = parser.parse_args()
 
@@ -351,15 +358,20 @@ def main():
                                                 recall_index,
                                                 vocab,
                                                 tokenizer,
-                                                name == 'test',
-                                                k_cases=args.cbr_k)
+                                                name,
+                                                k_cases=args.cbr_k,
+                                                boost=args.boost)
             outputs['origin_info'] = dataset
             with open(os.path.join(args.output_dir, '{}.pt'.format(name)),
                       'wb') as f:
                 pickle.dump(outputs, f)
             continue
         elif args.type == 'default':
-            outputs = encode_dataset(dataset, vocab, tokenizer, name == 'test')
+            outputs = encode_dataset(dataset,
+                                     vocab,
+                                     tokenizer,
+                                     name,
+                                     boost=args.boost)
 
         print('Shapes: ')
         with open(os.path.join(args.output_dir, '{}.pt'.format(name)),

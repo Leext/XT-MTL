@@ -172,6 +172,7 @@ def train_step(args, model, train_loader, tokenizer, device, optimizer,
 
 def train_step_prompt(args, model, train_loader, tokenizer, device, optimizer,
                       scheduler):
+
     def part_step(source_ids, source_mask, y):
         source_ids.to(device)
         source_mask.to(device)
@@ -253,8 +254,7 @@ def save_checkpoint(args,
                     epoch,
                     save_best_num=1):
     # Save model checkpoint
-    output_dir = os.path.join(args.output_dir, args.comment,
-                              'epoch_%d' % epoch)
+    output_dir = os.path.join(args.output_dir, args.comment, 'epoch_%d' % epoch)
     acc_ckpt_pairs.append((cur_acc, epoch, output_dir))
     acc_ckpt_pairs.sort(key=lambda x: x[0], reverse=True)
     if len(acc_ckpt_pairs) > save_best_num:
@@ -265,15 +265,13 @@ def save_checkpoint(args,
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     model_to_save = (model.module if hasattr(model, "module") else model
-                     )  # Take care of distributed/parallel training
+                    )  # Take care of distributed/parallel training
     model_to_save.save_pretrained(output_dir)
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
     logging.info("Saving model checkpoint to %s", output_dir)
     tokenizer.save_vocabulary(output_dir)
-    torch.save(optimizer.state_dict(), os.path.join(output_dir,
-                                                    "optimizer.pt"))
-    torch.save(scheduler.state_dict(), os.path.join(output_dir,
-                                                    "scheduler.pt"))
+    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
     logging.info("Saving optimizer and scheduler states to %s", output_dir)
     dump_error_cases(results, output_dir)
 
@@ -287,8 +285,7 @@ def dump_error_cases(results, output_dir):
             if task == 'q' or task == 'q_cbr':
                 for info, output, pred_ans in result[1]:
                     print('Q: %s' % info['question'], file=f)
-                    print('Gold: %s' % get_program_seq(info['program']),
-                          file=f)
+                    print('Gold: %s' % get_program_seq(info['program']), file=f)
                     print('Gold Ans: %s' % info['answer'], file=f)
                     print('Pred: %s' % output, file=f)
                     print('Pred Ans: %s' % pred_ans, file=f)
@@ -394,8 +391,7 @@ def train(args):
     if args.predict:
         answers = predict_prompt(args, model, test_loader, device, tokenizer,
                                  rule_executor)
-        output_file = os.path.join(args.output_dir, args.comment,
-                                   'predict.txt')
+        output_file = os.path.join(args.output_dir, args.comment, 'predict.txt')
         os.makedirs(os.path.join(args.output_dir, args.comment))
         with open(output_file, 'w') as f:
             f.write('\n'.join(answers))
@@ -412,8 +408,8 @@ def train(args):
     model.zero_grad()
 
     if args.kbp_init:
-        kb_train_loss = KBP.train_step(args, model, kb_train, device,
-                                       tokenizer, optimizer, scheduler, 0.1)
+        kb_train_loss = KBP.train_step(args, model, kb_train, device, tokenizer,
+                                       optimizer, scheduler, 0.1)
         logging.info('[KBP init] kb pretrain loss %.8f' % (kb_train_loss))
 
     acc_ckpt_pairs = [(0, -1, 'NOT_EXIST')]
@@ -460,8 +456,7 @@ def train(args):
         model.to(device)
         answers = predict_prompt(args, model, test_loader, device, tokenizer,
                                  rule_executor)
-        output_file = os.path.join(args.output_dir, args.comment,
-                                   'predict.txt')
+        output_file = os.path.join(args.output_dir, args.comment, 'predict.txt')
         with open(output_file, 'w') as f:
             f.write('\n'.join(answers))
 

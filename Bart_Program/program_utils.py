@@ -50,8 +50,8 @@ def seq2program(seq: str):
 funcs_with_rel = {
     'FilterStr', 'FilterNum', 'FilterYear', 'FilterDate', 'QFilterStr',
     'QFilterNum', 'QFilterYear', 'QFilterDate', 'Relate', 'SelectBetween',
-    'SelectAmong', 'QueryAttr', 'QueryAttrUnderCondition',
-    'QueryAttrQualifier', 'QueryRelationQualifier'
+    'SelectAmong', 'QueryAttr', 'QueryAttrUnderCondition', 'QueryAttrQualifier',
+    'QueryRelationQualifier'
 }
 
 funcs_with_2rels = {
@@ -150,8 +150,10 @@ def set_f1(s1: set, s2: set):
 
 def levenshtein3(s, t):
     ''' From Wikipedia article; Iterative with two matrix rows. '''
-    if len(s) == 0: return len(t)
-    elif len(t) == 0: return len(s)
+    if len(s) == 0:
+        return len(t)
+    elif len(t) == 0:
+        return len(s)
     v0 = [None] * (len(t) + 1)
     v1 = [None] * (len(t) + 1)
     for i in range(len(v0)):
@@ -182,3 +184,31 @@ rep_fn_map = {
     'func': get_func_rep
 }
 simi_fn_map = {'edit': edit_similarity, 'f1': set_f1}
+
+def get_program_labels(functions):
+    cur_labels = []
+    for f in functions:
+        if f in {'Relate'} or f.startswith('Filter'):
+            cur_labels.append('multihop')
+            break
+    for f in functions:
+        if f in {'QFilterStr', 'QFilterNum', 'QFilterYear', 'QFilterDate', 'QueryAttrUnderCondition', 'QueryAttrQualifier', 'QueryRelationQualifier'}:
+            cur_labels.append('qualifier')
+            break
+    for f in functions:
+        if f in {'SelectBetween','SelectAmong'}:
+            cur_labels.append('comparison')
+            break
+    for f in functions:
+        if f in {'And', 'Or'}:
+            cur_labels.append('logical')
+            break
+    for f in functions:
+        if f in {'Count'}:
+            cur_labels.append('count')
+            break
+    for f in functions:
+        if f in {'VerifyStr','VerifyNum','VerifyYear','VerifyDate'}:
+            cur_labels.append('verify')
+            break
+    return cur_labels

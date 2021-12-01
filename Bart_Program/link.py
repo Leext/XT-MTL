@@ -38,8 +38,10 @@ def is_num(w):
         return ww[0].isdigit() and ww[1].isdigit()
     return False
 
+
 def is_date(w):
     return re.match(r'\d{4}[/-]\d{2}[/-]\d{2}', w) is not None
+
 
 def collect_nums(text):
     words = re.split('[ ?()]', text)
@@ -52,6 +54,7 @@ def collect_nums(text):
 
 
 class Linker2:
+
     def __init__(self, kb_json: str):
         kb = json.load(open(kb_json))
         concepts = kb['concepts']

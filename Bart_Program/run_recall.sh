@@ -6,7 +6,7 @@ $INSPUR1 python -m Bart_Program.recall --input_dir "./Bart_Program/processed_dat
                         --save_dir "./Bart_Program/logs" \
                         --model_name_or_path "./Bart_Program/pretrained_model" \
                         --ckpt "Bart_Program/saves/recall_rule_rel/epoch_3" \
-                        --rep_fn "rel_seq" \
+                        --rep_fn "func_rel_seq" \
                         --simi_fn "edit" \
                         --device cuda:0 \
                         --recall_dump "./Bart_Program/recall_dump/rule_rel"
