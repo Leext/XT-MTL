@@ -18,11 +18,13 @@ from Bart_Program.program_utils import seq2program, get_program_seq, program2seq
 
 from MyQA.train.Server import Server as BoostServer
 
+
 class ModelManager:
     def __init__(self,
                  qa_model_path,
                  recall_model_path,
-                 base_model_path='') -> None:
+                 base_model_path='',
+                 boost_model_path='') -> None:
         print('Loading QA model %s' % qa_model_path)
         self.qa_model = BartForConditionalGeneration.from_pretrained(
             qa_model_path)
@@ -37,10 +39,20 @@ class ModelManager:
             self.base_model.eval()
         else:
             self.base_model = None
+        if os.path.isdir(boost_model_path):
+            print('Loading base model %s' % boost_model_path)
+            self.boost_model = BartForConditionalGeneration.from_pretrained(
+                boost_model_path)
+            self.boost_model.eval()
+        else:
+            self.boost_model = None
 
-    def generate(self, input_ids, use_base=False):
+    def generate(self, input_ids, use_base=False, use_boost=False):
         with torch.no_grad():
-            if use_base and self.base_model is not None:
+            if use_boost and self.boost_model is not None:
+                model = self.boost_model
+                print('Use boost')
+            elif use_base and self.base_model is not None:
                 model = self.base_model
                 print('Use base')
             else:
@@ -84,7 +96,7 @@ class IndexManager:
         # print(index.shape)
         q = [self.questions[i] for i in index[0]]
         return q
-    
+
     def insert(self, q, v):
         self.questions.append(q)
         self.vectors = torch.cat([self.vectors, v])
@@ -179,9 +191,9 @@ def gen_graph(func_list, inputs_list):
 class ServerBackend:
     def __init__(self, qa_model_path: str, recall_model_path: str,
                  index_path: str, kb_path: str, raw_data_path: str,
-                 base_model_path: str) -> None:
+                 base_model_path: str, boost_model_path: str) -> None:
         self.model_mgr = ModelManager(qa_model_path, recall_model_path,
-                                      base_model_path)
+                                      base_model_path, boost_model_path)
         self.tokenizer = BartTokenizerFast.from_pretrained(qa_model_path)
         self.kb_mgr = KBManager(kb_path)
         self.data_mgr = QADataManager(raw_data_path)
@@ -200,19 +212,19 @@ class ServerBackend:
             return
         self.data_mgr.q2program[question] = program
         input_ids = self.tokenizer.batch_encode_plus([question],
-                                                    padding=True,
-                                                    max_length=1024,
-                                                    truncation=True,
-                                                    return_tensors='pt')
-        rep = self.model_mgr.recall_model.get_sent_rep(input_ids['input_ids'],
-                                        input_ids['attention_mask'])
+                                                     padding=True,
+                                                     max_length=1024,
+                                                     truncation=True,
+                                                     return_tensors='pt')
+        rep = self.model_mgr.recall_model.get_sent_rep(
+            input_ids['input_ids'], input_ids['attention_mask'])
         self.index_mgr.insert(question, rep)
-        print('new size %d, %d' % (len(self.data_mgr.q2program), len(self.index_mgr.vectors)))
+        print('new size %d, %d' %
+              (len(self.data_mgr.q2program), len(self.index_mgr.vectors)))
 
-
-    def answer(self, question: str, use_base=False):
+    def answer(self, question: str, use_base=False, use_boost=False):
         # p = self.data_mgr.find(question)
-        p = self.gen_program(question, use_base)
+        p = self.gen_program(question, use_base, use_boost)
         ans, (func_list, inputs_list) = self.kb_mgr.exec_program(p)
         return {
             'answer': ans,
@@ -232,8 +244,9 @@ class ServerBackend:
     def _prepare_qa_input(self,
                           question: str,
                           cases: List[Tuple[str, str]],
-                          use_base=False):
-        if not use_base:
+                          use_base=False,
+                          use_boost=False):
+        if not use_base and not use_boost:
             question = 'Question 0 %s Program for Question 0 is' % question
             sents = [question]
             for idx, (q, p) in enumerate(cases):
@@ -270,16 +283,18 @@ class ServerBackend:
         ]
         return res
 
-    def gen_program(self, question: str, use_base=False):
-        if not use_base:
+    def gen_program(self, question: str, use_base=False, use_boost=False):
+        question = question.replace('located', 'lcated')
+        if not use_base and not use_boost:
             input_ids = self._prepare_recall_input(question)
             q_rep = self.model_mgr.sent_rep(input_ids)
             q_cases = self.index_mgr.get_topk(q_rep, 5)
             cases = [(q, self.data_mgr.q2program.get(q)) for q in q_cases]
         else:
             cases = []
-        input_ids = self._prepare_qa_input(question, cases, use_base)
-        output_ids = self.model_mgr.generate(input_ids, use_base)
+        input_ids = self._prepare_qa_input(question, cases, use_base,
+                                           use_boost)
+        output_ids = self.model_mgr.generate(input_ids, use_base, use_boost)
         program = self._decode(output_ids)[0]
         return program
 
@@ -316,7 +331,7 @@ def run_flask(args):
     raw_data_path = './dataset/train.json'
     server = ServerBackend(args.qa_model_path, args.recall_model_path,
                            args.index_path, kb_path, raw_data_path,
-                           args.base_model_path)
+                           args.base_model_path, args.boost_model_path)
     app = Flask(__name__,
                 static_folder="./dist/assets",
                 template_folder="./dist")
@@ -334,10 +349,7 @@ def run_flask(args):
     @app.route('/examples')
     def get_examples():
         model_name = request.args['model']
-        if model_name == '数据增强方法':
-            jsonify(server.boost_server.random_example_list())
-        else:
-            return jsonify(server.data_mgr.random_example_list())
+        return jsonify(server.data_mgr.random_example_list())
 
     @app.route('/init_examples')
     def get_init_examples():
@@ -350,8 +362,6 @@ def run_flask(args):
             "Does Palo Alto, birthplace of Hewlett-Packard, or Charleston, capital of West Virginia, have less elevation above sea level?",
             "Among the feature films that is distributed at United Kingdom,which one has the smallest duration ?"
         ]
-        if model_name == '数据增强方法':
-            jsonify(server.boost_server.random_example_list())
         return jsonify(server.data_mgr.random_example_list(init_q))
 
     @app.route('/qa')
@@ -360,11 +370,9 @@ def run_flask(args):
         model_name = request.args['model']
         method_name = request.args['method']
         use_base = method_name == '基线'
+        use_boost = model_name == '数据增强方法'
         print('Question:', q)
-        if model_name == '数据增强方法':
-            res = server.boost_server.answer(q)
-        else:
-            res = server.answer(q, use_base)
+        res = server.answer(q, use_base, use_boost)
         return res
 
     @app.route('/exec')
@@ -377,7 +385,7 @@ def run_flask(args):
     def save_case():
         p = request.args['program']
         q = request.args['question']
-        server.insert_index(q, p) 
+        # server.insert_index(q, p)
         return "ok"
 
     app.run('0.0.0.0', args.port, debug=True)
@@ -386,6 +394,7 @@ def run_flask(args):
 # best_qa_model = './Bart_Program/saves/mtl_rel_cbr_infill+2+_kbp2_0.5_w0.1_real_smp_1.0_revise/epoch_52'
 best_qa_model = './Bart_Program/saves/mtl_qcbr_rel_0.1_kbp_0.5_real_smp_1.0_revise/epoch_25'
 base_qa_model = './Bart_Program/saves/vanilla_0.1/epoch_25'
+boost_qa_model = './Bart_Program/saves/vanilla_0.01/epoch_28'
 best_recall_model = './Bart_Program/saves/recall_rule_rel/epoch_3'
 index_path = './server/index/index.pt'
 if __name__ == '__main__':
@@ -393,6 +402,7 @@ if __name__ == '__main__':
     parser.add_argument('--port', default=9997, type=int)
     parser.add_argument('--qa_model_path', default=best_qa_model)
     parser.add_argument('--base_model_path', default=base_qa_model)
+    parser.add_argument('--boost_model_path', default=boost_qa_model)
     parser.add_argument('--recall_model_path', default=best_recall_model)
     parser.add_argument('--index_path', default=index_path)
     parser.add_argument('--device', default='cpu')
